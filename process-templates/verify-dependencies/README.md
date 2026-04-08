@@ -90,23 +90,24 @@ You can require an approval via an manual intervention to proceed when the depen
 
 There are 16 possible results for each dependency due to the various options in this step and the the current state of the in the source and target environment.  The table below will help you determine how each possibility can occur and the end result.
 
-| Matching running in Target Env (Prod) | Matching running in Source Env (Test) | Test is Newer | Chosen Action            | Approval Requested | Failure | Deployment Needed | Approval Required
-| No                                    | No                                    | N/A           | Stop                     | Yes or No          | TRUE    | FALSE             | FALSE
-| No                                    | No                                    | N/A           | Continue                 | Yes                | FALSE   | FALSE             | TRUE
-| No                                    | No                                    | N/A           | Continue                 | No                 | FALSE   | FALSE             | FALSE
-| No                                    | No                                    | N/A           | Deploy                   | Yes or No          | TRUE    | FALSE             | FALSE
-| Yes                                   | N/A (Is first env in lifecycle)       | N/A           | Any                      | Yes or No          | FALSE   | FALSE             | FALSE
-| No                                    | Yes                                   | N/A           | Stop                     | Yes or No          | TRUE    | FALSE             | FALSE
-| No                                    | Yes                                   | N/A           | Continue                 | Yes                | FALSE   | FALSE             | TRUE
-| No                                    | Yes                                   | N/A           | Continue                 | No                 | FALSE   | FALSE             | FALSE
-| No                                    | Yes                                   | N/A           | Deploy                   | Yes                | FALSE   | TRUE              | TRUE
-| No                                    | Yes                                   | N/A           | Deploy*                  | No                 | FALSE   | TRUE              | FALSE
-| Yes                                   | Yes                                   | No            | Any                      | Yes or No          | FALSE   | FALSE             | FALSE
-| Yes                                   | Yes                                   | Yes           | Stop                     | Yes or No          | FALSE   | FALSE             | FALSE
-| Yes                                   | Yes                                   | Yes           | Continue                 | Yes or No          | FALSE   | FALSE             | FALSE
-| Yes                                   | Yes                                   | Yes           | DeployNoMatchingInTarget | Yes or No          | FALSE   | FALSE             | FALSE
-| Yes                                   | Yes                                   | Yes           | DeployNewerMatching      | Yes                | FALSE   | TRUE              | TRUE
-| Yes                                   | Yes                                   | Yes           | DeployNewerMatching      | No                 | FALSE   | TRUE              | FALSE
+| Matching running in Target Env (Prod) | Matching running in Source Env (Test) | Test is Newer | Chosen Action            | Approval Requested | Failure | Deployment Needed | Approval Required |
+| ------------------------------------- | ------------------------------------- | ------------- | ------------------------ | ------------------ | ------- | ----------------- | ----------------- |
+| No                                    | No                                    | N/A           | Stop                     | Yes or No          | TRUE    | FALSE             | FALSE             |
+| No                                    | No                                    | N/A           | Continue                 | Yes                | FALSE   | FALSE             | TRUE              |
+| No                                    | No                                    | N/A           | Continue                 | No                 | FALSE   | FALSE             | FALSE             |
+| No                                    | No                                    | N/A           | Deploy                   | Yes or No          | TRUE    | FALSE             | FALSE             |
+| Yes                                   | N/A (Is first env in lifecycle)       | N/A           | Any                      | Yes or No          | FALSE   | FALSE             | FALSE             |
+| No                                    | Yes                                   | N/A           | Stop                     | Yes or No          | TRUE    | FALSE             | FALSE             |
+| No                                    | Yes                                   | N/A           | Continue                 | Yes                | FALSE   | FALSE             | TRUE              |
+| No                                    | Yes                                   | N/A           | Continue                 | No                 | FALSE   | FALSE             | FALSE             |
+| No                                    | Yes                                   | N/A           | Deploy                   | Yes                | FALSE   | TRUE              | TRUE              |
+| No                                    | Yes                                   | N/A           | Deploy*                  | No                 | FALSE   | TRUE              | FALSE             |
+| Yes                                   | Yes                                   | No            | Any                      | Yes or No          | FALSE   | FALSE             | FALSE             |
+| Yes                                   | Yes                                   | Yes           | Stop                     | Yes or No          | FALSE   | FALSE             | FALSE             |
+| Yes                                   | Yes                                   | Yes           | Continue                 | Yes or No          | FALSE   | FALSE             | FALSE             |
+| Yes                                   | Yes                                   | Yes           | DeployNoMatchingInTarget | Yes or No          | FALSE   | FALSE             | FALSE             |
+| Yes                                   | Yes                                   | Yes           | DeployNewerMatching      | Yes                | FALSE   | TRUE              | TRUE              |
+| Yes                                   | Yes                                   | Yes           | DeployNewerMatching      | No                 | FALSE   | TRUE              | FALSE             |
 
 ### ITSM Approvals
 
