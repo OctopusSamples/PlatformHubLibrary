@@ -2,6 +2,8 @@
 
 This process template will help you ensure all the dependent projects for your application have been deployed to a target environment with a specific version.
 
+![Example of the verify dependencies being used in a deployment](verify-dependencies-in-action.png)
+
 ## Use Case
 
 In a perfect world, each project in Octopus Deploy is independently deployable.  However, the real world is messy and dependencies, even transient dependencies, continue to exist.  This process template solves ensures all the dependent projects are running the appropriate version.  It will also let you approve and deploy those dependent projects.  
