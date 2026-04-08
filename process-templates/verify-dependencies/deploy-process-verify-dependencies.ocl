@@ -1,0 +1,2045 @@
+name = "Deploy Process - Verify Dependencies"
+description = "A process template that will ensure all the required dependent projects are deployed."
+
+icon {
+    color = "#1A77CA"
+    id = "binoculars"
+}
+
+parameter "Template.Worker.Pool" {
+    display_settings = {
+        Octopus.ControlType = "WorkerPool"
+    }
+    help_text = "**Required** - The worker pool where this script will run."
+    label = "Worker Pool"
+}
+
+parameter "Template.Octopus.Api.Key" {
+    display_settings = {
+        Octopus.ControlType = "Sensitive"
+    }
+    help_text = <<-EOT
+            **Required** - Octopus Deploy API Key with permissions to:
+            
+            - Query for spaces, projects, environments, releases, deployments, and tenants
+            - Trigger deployments for the dependencies (if that option is chosen)
+            EOT
+    label = "Octopus Deploy API Key"
+}
+
+parameter "Template.Environment.Name" {
+    display_settings = {
+        Octopus.ControlType = "SingleLineText"
+    }
+    help_text = "**Required** - The name of the target environment you want to check and deploy dependencies to."
+    label = "Target Environment"
+
+    value "#{Octopus.Environment.Name}" {}
+}
+
+parameter "Template.Dependency.Projects" {
+    display_settings = {
+        Octopus.ControlType = "MultiLineText"
+    }
+    help_text = <<-EOT
+            **Required** - JSON Array Representing the dependencies for this project.
+            
+            ```
+            [
+              {
+                "projectName": "Spear", 
+                "versionPattern": ">1.0.42", 
+                "deployGroup": 1,    
+              },
+              {
+                "versionPattern": "~2.4.0",
+                "spaceName": "Default",
+                "projectName": "TAKA",
+                "deployGroup": 1,
+                "promptedVariables": [
+                     {
+                           "name": "My Awesome Variable"
+                           "value": "Some Value"
+                     },
+                     {
+                           "name": "Other Variable"
+                           "value": "Another Value"
+                     }
+                 ]
+              },
+              {
+                "versionPattern": "^4.0.0",
+                "spaceName": "Default",
+                "projectName": "StoreHub",
+                "deployGroup": 2,
+                "tenantName": "Internal",
+                "dependencyAction": "Continue"
+              }
+            ]
+            ```
+            
+            The properties to note are:
+            
+            - projectName - **Required** the name of the project of the dependency.
+            - versionPattern- **Required** the version pattern to match on.  See below for version information.
+            - deployGroup - **Optional** Projects in the same deploy group will be deployed concurrently.  Items in different deploy groups will be deployed sequentially.  If omitted all dependencies are deployed sequentially.  
+            - spaceName - **Optional** uses the current space if not provided.
+            - tenantName - **Optional** the name of the tenant to deploy.  If not specified will use the current tenant being deployed (if doing a tenanted deployment)
+            - promptedVariables - **Optional** an array that lets you send in prompted variable values to the dependency project.  This will only work with string variable types, text, and sensitive values.
+            - dependencyAction - **Optional** overrides the default dependency action parameter.  For example, if you want to continue for a specific dependency but stop for all other dependencies.  The options are: 
+                - `Stop` which will stop the deployment
+                - `Continue` which will continue the deploy
+                - `DeployNoMatchingInTarget` which will deploy only when no matching found
+                - `DeployNewerMatching` which will deploy only when newer matching found
+            
+            The version pattern follows Node's versioning scheme.  But it includes support for four digits (1.2.3.4) as well as three (1.2.3).  Any pre-release tags are removed prior to comparison.
+            
+            - Exact version: 1.2.3.4 - only version 1.2.3.4 will be accepted.
+            - Greater than current: >1.2.3.4 - Any version greater than or equal to 1.2.3.4 will be accepted.  
+            - Caret range: ^1.2.3.4 - Allows minor, patch, and build updates, locking the major version.  Similar to 1.x.
+            - Tilde range: ~1.2.3.4 - Allows patch and build updates only, locking the major and minor versions.
+            - Major wildcard: 2.x - Allows any version or any version within a major range.
+            EOT
+    label = "Project Dependencies"
+}
+
+parameter "Template.Dependency.Action" {
+    display_settings = {
+        Octopus.ControlType = "Select"
+        Octopus.SelectOptions = <<-EOT
+            Stop|Stop Deployment
+            Continue|Continue Deploy
+            DeployNoMatchingInTarget|Deploy only when no matching found
+            DeployNewerMatching|Deploy when newer matching found
+            EOT
+    }
+    help_text = <<-EOT
+            **Required** - Indicates what this template should do when a dependency check fails.
+            
+            - **Stop:** If one or more of the dependency checks fail it will stop and fail the deployment.
+            - **Continue:** Will proceed with the deployment even if the dependency check fails.  Will not attempt to deploy any dependent projects.
+            - **Deploy when newer matching found:** Will always deploy the latest matching version from the previous environment.  
+            - **Deploy only when no matching found:** Will trigger a deployment to the target environment only if the target environment doesn't include a matching version.  
+            
+            The deploy options control when a deployment will occur.  For example, your pattern is >4.5.2.  
+            
+            - Test 1 - The latest version in Production is 4.1.2 and in Test it is 4.5.7.  Deploy when newer will deploy 4.5.7.  Deploy when no matching will deploy 4.5.7.
+            - Test 2 - The latest version in Production is 4.5.3 and in test it is 4.5.7.  Deploy when newer will deploy 4.5.7.  Deploy when no matching WILL NOT deploy 4.5.7 because 4.5.3 matches the pattern >4.5.2.
+            
+            **Important**: This can be overridden in the `Project Dependencies` JSON object.
+            EOT
+    label = "Default Dependency Action"
+
+    value "Stop" {}
+}
+
+parameter "Template.Dependency.Approval" {
+    display_settings = {
+        Octopus.ControlType = "Select"
+        Octopus.SelectOptions = <<-EOT
+            Yes|Yes
+            No|No
+            EOT
+    }
+    help_text = <<-EOT
+            **Required** - Request approval via a manual intervention if the dependency check fails and you wish to continue or deploy the child dependencies.  Setting this to Yes DOES NOT guarantee a manual intervention will run.  
+            
+            - If the Dependency Action is set to Stop, it will fail the deployment and not run the manual intervention.
+            - If all the dependencies pass the check, it will continue without running the manual intervention.
+            
+            The log will indicate if an manual intervention was determined to be needed.
+            EOT
+    label = "Approval requested to proceed"
+
+    value "Yes" {}
+}
+
+parameter "Template.Approval.Teams" {
+    display_settings = {
+        Octopus.ControlType = "Teams"
+    }
+    help_text = "**Required** - The list of teams who can approval the manual intervention."
+    label = "Approval Teams"
+}
+
+parameter "Template.ChangeRequest.ReuseChangeRequest" {
+    display_settings = {
+        Octopus.ControlType = "Select"
+        Octopus.SelectOptions = <<-EOT
+            Yes|Yes
+            No|No
+            EOT
+    }
+    help_text = <<-EOT
+            **Required** - When set to `Yes` it will reuse the change request number for all the dependent projects that need to be deployed with ITSM approvals configured.
+            
+            **Important** - the dependent project has to be configured for the same ITSM approval workflow.  
+            EOT
+    label = "Reuse Change Request on Dependencies"
+
+    value "No" {}
+}
+
+parameter "Template.Tenant.Name" {
+    display_settings = {
+        Octopus.ControlType = "SingleLineText"
+    }
+    help_text = "**Optional** - The name of the tenant you want to check and deploy the dependencies for"
+    is_optional = true
+    label = "Target Tenant"
+
+    value "#{Octopus.Deployment.Tenant.Name}" {}
+}
+
+step "check-dependencies" {
+    name = "Check Dependencies"
+
+    action {
+        action_type = "Octopus.Script"
+        notes = <<-EOT
+                **Always Runs**
+                
+                Checks the JSON provided to see if all the necessary projects that this project depends on has been deployed.
+                EOT
+        properties = {
+            Octopus.Action.RunOnServer = "true"
+            Octopus.Action.Script.ScriptBody = <<-EOT
+                $parameterOctopusAPIKey = $OctopusParameters["Template.Octopus.Api.Key"]
+                $parameterOctopusInstance = $OctopusParameters["Octopus.Web.ServerUri"]
+                $parameterDependencies = $OctopusParameters["Template.Dependency.Projects"]
+                $parameterOlderDependencyAction = $OctopusParameters["Template.Dependency.Action"]
+                $parameterReuseChangeRequest = $OctopusParameters["Template.ChangeRequest.ReuseChangeRequest"]
+                
+                $parameterTargetEnvironmentName = $OctopusParameters["Template.Environment.Name"] # Target environment for deployment
+                $parameterTargetTenantName = $OctopusParameters["Template.Tenant.Name"] # Target Tenant for deployment (when doing multi-tenancy)
+                $parameterSpaceName = $OctopusParameters["Octopus.Space.Name"] # Space name to use for API calls, if not specified will attempt to look up based on space name
+                $stepName = $OctopusParameters["Octopus.Action.StepName"]
+                $parameterApprovalRequested = $OctopusParameters["Template.Dependency.Approval"] # Indicates if approval was requested
+                
+                $octopusVariableServiceNowChangeRequestNumber = $OctopusParameters["Octopus.ServiceNow.ChangeRequest.Number"] # Indicates a ServiceNow change request was either created or supplied to this deployment
+                $octopusVariableJSMChangeRequestNumber = $OctopusParameters["Octopus.JiraServiceManagement.ChangeRequest.Number"] # Indicates a JIRA Service Management change request was either created or supplied to this deployment
+                
+                Write-Host "Octopus Instance: $parameterOctopusInstance"
+                Write-Host "Dependencies: $parameterDependencies"
+                Write-Host "Dependency Action: $parameterOlderDependencyAction"
+                Write-Host "Reuse Change Request: $parameterReuseChangeRequest"
+                Write-Host "Approval Requested: $parameterApprovalRequested"
+                Write-Host "Target Environment Name: $parameterTargetEnvironmentName"
+                Write-Host "Target Tenant Name: $parameterTargetTenantName"
+                Write-Host "Target Space Name: $parameterSpaceName"
+                Write-Host "ServiceNow Change Request Number: $octopusVariableServiceNowChangeRequestNumber"
+                Write-Host "JIRA Service Management Change Request Number: $octopusVariableJSMChangeRequestNumber"
+                
+                $cachedResults = @{}
+                
+                function Get-OctopusUrl
+                {
+                    param (
+                        $EndPoint,
+                        $SpaceId,
+                        $OctopusUrl
+                    )
+                
+                    $octopusUrlToUse = $OctopusUrl
+                    if ($OctopusUrl.EndsWith("/"))
+                    {
+                        $octopusUrlToUse = $OctopusUrl.Substring(0, $OctopusUrl.Length - 1)
+                    }
+                
+                    if ($EndPoint -match "/api")
+                    {
+                        if (!$EndPoint.StartsWith("/api"))
+                        {
+                            $EndPoint = $EndPoint.Substring($EndPoint.IndexOf("/api"))
+                        }
+                
+                        return "$octopusUrlToUse$EndPoint"
+                    }
+                
+                    if ([string]::IsNullOrWhiteSpace($SpaceId))
+                    {
+                        return "$octopusUrlToUse/api/$EndPoint"
+                    }
+                
+                    return "$octopusUrlToUse/api/$spaceId/$EndPoint"
+                }
+                
+                function Invoke-OctopusApi
+                {
+                    param
+                    (
+                        $octopusUrl,
+                        $spaceId,
+                        $endPoint,
+                        $apiKey,
+                        $method,
+                        $item,        
+                        $retryCount,
+                        $skipCache
+                    )
+                
+                    try
+                    {    
+                        $localSkipCache = $false
+                        if ($null -eq $skipCache)    
+                        {
+                            $localSkipCache = $false
+                        }
+                        else
+                        {
+                            $localSkipCache = $skipCache
+                        }
+                
+                        $url = Get-OctopusUrl -EndPoint $endPoint -SpaceId $spaceId -OctopusUrl $octopusUrl
+                
+                        if ($null -eq $item)
+                        {
+                             if ($method.ToUpper().Trim() -eq "GET" -and $localSkipCache -ne $true)
+                             {
+                                Write-Verbose "Checking to see if $url is already in the cache"
+                                if ($cachedResults.ContainsKey($url) -eq $true)
+                                {
+                                    Write-Verbose "$url is already in the cache, returning the result"
+                                    return $cachedResults[$url]
+                                }
+                            }
+                            else
+                            {
+                                Write-Verbose "Ignoring cache because the method is $method."    
+                            }
+                
+                            Write-Verbose "No data to post or put, calling bog standard invoke-restmethod for $url"
+                            $result = Invoke-RestMethod -Method $method -Uri $url -Headers @{"X-Octopus-ApiKey" = "$ApiKey" } -ContentType 'application/json; charset=utf-8' -TimeoutSec 60
+                
+                            if ($localSkipCache -eq $false)
+                            {
+                                if ($cachedResults.ContainsKey($url) -eq $true)
+                                {
+                                    $cachedResults.Remove($url)
+                                }
+                                Write-Verbose "Adding $url to the cache"
+                                $cachedResults.add($url, $result)
+                            }
+                            
+                            return $result
+                        }
+                
+                        $body = $item | ConvertTo-Json -Depth 10
+                        Write-Verbose $body
+                
+                        Write-Verbose "Invoking $method $url"
+                        return Invoke-RestMethod -Method $method -Uri $url -Headers @{"X-Octopus-ApiKey" = "$ApiKey" } -Body $body -ContentType 'application/json; charset=utf-8' -TimeoutSec 60    
+                    }
+                    catch [System.TimeoutException]
+                    {        
+                        $newRetryCount = 1
+                        if ($null -ne $retryCount)
+                        {
+                            $newRetryCount = $retryCount + 1
+                        }
+                
+                        if ($newRetryCount -gt 4)
+                        {
+                            Throw "Timeout detected, max retries has been exceeded for this call.  Exiting."
+                        }
+                        else 
+                        {
+                            Write-Host "Timeout detected, going to retry this call for the $newRetryCount time."
+                            Invoke-OctopusApi -url $url -apiKey $apiKey -method $method -item $item -filePath $filePath -retryCount $retryCount        
+                        }
+                    }
+                    catch
+                    {
+                        Write-Highlight "There was an error making a $method call to $url.  All request information (JSON body specifically) is stored in the log.  Please check that for more information."
+                
+                        if ($null -ne $_.Exception.Response)
+                        {
+                            if ($_.Exception.Response.StatusCode -eq 401)
+                            {
+                                Write-Error "Unauthorized error returned from $url, please verify API key and try again"
+                            }
+                            elseif ($_.ErrorDetails.Message)
+                            {                
+                                Write-Error -Message "Error calling $url StatusCode: $($_.Exception.Response) $($_.ErrorDetails.Message)"
+                                Write-Error $_.Exception
+                            }            
+                            else 
+                            {
+                                Write-Error $_.Exception
+                            }
+                        }
+                        else
+                        {
+                            Write-Error $_.Exception
+                        }
+                
+                        Write-Error "Stopping the deployment."
+                        Exit 1
+                    }    
+                }
+                
+                function Get-ListFromOctopusApi
+                {
+                    param (
+                        $octopusUrl,
+                        $endPoint,
+                        $spaceId,
+                        $apiKey,
+                        $propertyName
+                    )
+                
+                    $rawItemList = Invoke-OctopusApi -octopusUrl $octopusUrl -endPoint $endPoint -spaceId $spaceId -apiKey $octopusApiKey -method "GET" -skipCache $true
+                
+                    $returnList = @($rawItemList.$propertyName)
+                
+                    Write-Verbose "The endpoint $endPoint returned a list with $($returnList.Count) items"
+                
+                    return ,$returnList
+                }
+                
+                function Get-FilteredOctopusItem
+                {
+                    param(
+                        $itemList,
+                        $itemName, 
+                        $defaultValue
+                    )
+                
+                    if ($itemList.Count -eq 0 -and $null -eq $defaultValue)
+                    {
+                        Write-Error "Unable to find $itemName and a default value isn't defined.  Exiting with an exit code of 1."
+                        Exit 1
+                    }  
+                    elseif($itemList.Count -eq 0 -and $null -ne $defaultValue)
+                    {
+                        Write-Host "Unable to find $itemName, but a default value is defined, so returning the default value."
+                        return $defaultValue
+                    }
+                
+                    $item = $itemList | Where-Object { $_.Name.ToLower().Trim() -eq $itemName.ToLower().Trim() }      
+                
+                    if ($null -eq $item -and $null -eq $defaultValue)
+                    {
+                        Write-Error "Unable to find $itemName and a default value isn't defined.  Exiting with an exit code of 1."
+                        exit 1
+                    }
+                    elseif ($null -eq $item -and $null -ne $defaultValue)
+                    {
+                        Write-Host "Unable to find $itemName, but a default value is defined, so returning the default value."
+                        return $defaultValue
+                    }
+                
+                    Write-Host "Successfully found $itemName with an id of $($item.Id)"
+                    return $item
+                }
+                
+                function Get-OctopusItemByName
+                {
+                    param(
+                        $itemName,
+                        $itemType,
+                        $endpoint,
+                        $defaultValue,
+                        $spaceId,
+                        $octopusUrl,
+                        $octopusApiKey
+                    )
+                
+                    if ([string]::IsNullOrWhiteSpace($itemName) -or $itemName -like "#{Octopus*")
+                    {
+                        Write-Verbose "The item name passed in was $itemName, returning the default value for $itemType"
+                        return $defaultValue
+                    }
+                
+                    Write-Host "Attempting to find $itemType with the name of $itemName"
+                    
+                    $itemList = Get-ListFromOctopusApi -octopusUrl $octopusUrl -endPoint "$($endPoint)?partialName=$([uri]::EscapeDataString($itemName))&skip=0&take=100" -spaceId $spaceId -apiKey $octopusApiKey -method "GET" -propertyName "Items"   
+                
+                    return Get-FilteredOctopusItem -itemList $itemList -itemName $itemName -defaultValue $defaultValue        
+                }
+                
+                function Wait-ForExecutingTasksToComplete {
+                    param (
+                        $spaceId,
+                        $project,
+                        $tenant,        
+                        $sourceEnvironmentList,
+                        $targetEnvironment,
+                        $octopusUrl,
+                        $octopusApiKey
+                    )   
+                
+                    $taskEndPoint = "tasks?skip=0&take=20&spaces=$spaceId&includeSystem=false&project=$($project.Id)&name=Deploy&states=Executing"
+                    if ($null -ne $tenant)
+                    {
+                        $taskEndPoint += "&tenant=$($tenant.Id)"
+                    }
+                    
+                    $environmentList = $sourceEnvironmentList + @($targetEnvironment.Id)
+                    $tasksExecuting = $false
+                
+                    do 
+                    {
+                        $tasksExecuting = $false
+                        foreach ($environmentId in $environmentList) 
+                        {
+                            $taskList = Get-ListFromOctopusApi -octopusUrl $octopusUrl -endPoint "$($taskEndPoint)&environment=$environmentId" -spaceId $null -apiKey $octopusApiKey -method "GET" -propertyName "Items"        
+                
+                            if ($taskList.Count -gt 0)
+                            {
+                                Write-Host "⏳ Deployment for project $($project.Name) to environment $($environmentId) is still in progress.  Will check again later..."
+                                $tasksExecuting = $true
+                            }
+                        }
+                
+                        if ($tasksExecuting -eq $true)
+                        {
+                            Write-Host "⏳ At least one deployment is still executing in the source and destination environments.  Waiting for 5 seconds before checking again..."
+                            Start-Sleep -Seconds 5
+                        }
+                
+                    } while ($tasksExecuting -eq $true)
+                
+                    Write-Host "✅ All deployments for project $($project.Name) the target and source environments are no longer executing, proceeding with the deployment checks."
+                }
+                
+                function Get-SuccessfulDeploymentTasks
+                {
+                    param (
+                        $spaceId,
+                        $project,
+                        $tenant,        
+                        $environmentList,
+                        $octopusUrl,
+                        $octopusApiKey
+                    )    
+                
+                    $taskEndPoint = "tasks?skip=0&take=20&spaces=$spaceId&includeSystem=false&project=$($project.Id)&name=Deploy&states=Success"
+                
+                    if ($null -ne $tenant)
+                    {
+                        $taskEndPoint += "&tenant=$($tenant.Id)"
+                    }
+                
+                    $taskList = @()
+                
+                    foreach ($environmentId in $environmentList)
+                    {
+                        $octopusTaskList = Get-ListFromOctopusApi -octopusUrl $octopusUrl -endPoint "$($taskEndPoint)&environment=$environmentId" -spaceId $null -apiKey $octopusApiKey -method "GET" -propertyName "Items"
+                        $taskList += $octopusTaskList
+                    }
+                
+                    $orderedTaskList = @($taskList | Sort-Object -Property StartTime -Descending)
+                    Write-Verbose "We have $($orderedTaskList.Count) number of tasks to loop through"
+                
+                    return ,$orderedTaskList
+                }
+                
+                function Get-ProjectChannelsWithDestinationEnvironment
+                {
+                    param(
+                        $project,
+                        $environment,
+                        $spaceId,
+                        $octopusUrl,
+                        $octopusApiKey
+                    )
+                
+                    $channelList = Get-ListFromOctopusApi -octopusUrl $octopusUrl -endPoint "projects/$($project.Id)/channels" -spaceId $spaceId -apiKey $octopusApiKey -method "GET" -propertyName "Items"
+                    $matchingChannels = @()
+                
+                    foreach ($channel in $channelList)
+                    {
+                        if ([string]::IsNullOrWhiteSpace($channel.ParentEnvironmentId) -eq $false)
+                        {
+                            Write-Verbose "Channel $($channel.Name) is tied to an ephemeral environment, skipping as we are looking for channels that include the target environment"
+                            continue
+                        }
+                
+                        if ($null -eq $channel.LifecycleId)
+                        {
+                            Write-Verbose "Channel $($channel.Name) does not have a lifecycle associated with it, using the project lifecycle"
+                            $lifecyclePhases = Get-ListFromOctopusApi -octopusUrl $octopusUrl -endPoint "lifecycles/$($project.LifecycleId)/preview" -spaceId $spaceId -apiKey $octopusApiKey -method "GET" -propertyName "Phases"
+                        }
+                        else
+                        {
+                            Write-Verbose "Channel $($channel.Name) has a lifecycle associated with it, using that lifecycle"
+                            $lifecyclePhases = Get-ListFromOctopusApi -octopusUrl $octopusUrl -endPoint "lifecycles/$($channel.LifecycleId)/preview" -spaceId $spaceId -apiKey $octopusApiKey -method "GET" -propertyName "Phases"
+                        }
+                
+                        Write-Verbose "Checking if channel $($channel.Name) contains the target environment $($environment.Name)"
+                        $channelContainsDestinationEnvironment = $false
+                        foreach ($phase in $lifecyclePhases)
+                        {
+                            if ($phase.AutomaticDeploymentTargets -contains $environment.Id)
+                            {
+                                $channelContainsDestinationEnvironment = $true
+                                break
+                            }
+                
+                            if ($phase.OptionalDeploymentTargets -contains $environment.Id)
+                            {
+                                $channelContainsDestinationEnvironment = $true
+                                break
+                            }
+                        }
+                
+                        if ($channelContainsDestinationEnvironment -eq $true)
+                        {
+                            Write-Host "Channel $($channel.Name) contains the target environment $($environment.Name)"
+                            $matchingChannels += @{
+                                "Channel" = $channel
+                                "LifecyclePhases" = $lifecyclePhases
+                            }             
+                        }
+                    }
+                
+                    if ($matchingChannels.Count -eq 0)
+                    {
+                        Write-Highlight "❌ Unable to find any channels for project $($dependency.ProjectName) that can deploy to environment $($environment.Name).  Stopping deployments."
+                        Write-Error "Stopping deployment because no matching lifecycles for the desired environment name can be found."
+                        exit 1
+                    }
+                
+                    return ,$matchingChannels
+                }
+                
+                function Get-SourceEnvironmentsFromPhase
+                {
+                    param(
+                        $matchingChannels,
+                        $environment
+                    )
+                
+                    $sourceEnvironments = @()  
+                    Write-Verbose "Looping through $($matchingChannels.Count) to find the previous environment."
+                
+                    foreach ($channelInfo in $matchingChannels)
+                    {
+                        $lifecyclePhases = $channelInfo.LifecyclePhases
+                        $lifecyclePhaseIndex = -1
+                
+                        for ($i = 0; $i -lt $lifecyclePhases.Count; $i++)
+                        {
+                            $phase = $lifecyclePhases[$i]
+                            if ($phase.AutomaticDeploymentTargets -contains $environment.Id -or $phase.OptionalDeploymentTargets -contains $environment.Id)
+                            {
+                                Write-Verbose "The phase $i has the target environment $($environment.Name)"
+                                $lifecyclePhaseIndex = $i
+                                break
+                            }
+                        }
+                
+                        for ($i = $lifecyclePhaseIndex - 1; $i -ge 0; $i--)
+                        {
+                            $previousLifecyclePhase = $lifecyclePhases[$lifecyclePhaseIndex - 1]      
+                            foreach ($environmentId in $previousLifecyclePhase.AutomaticDeploymentTargets)
+                            {
+                                if ($sourceEnvironments -notcontains $environmentId)
+                                {
+                                    Write-Verbose "Adding $environmentId to the source environments because it is a previous environment in $($channelInfo.Channel.Name)"
+                                    $sourceEnvironments += $environmentId
+                                }
+                            }
+                
+                            foreach ($environmentId in $previousLifecyclePhase.OptionalDeploymentTargets)
+                            {
+                                if ($sourceEnvironments -notcontains $environmentId)
+                                {
+                                    Write-Verbose "Adding $environmentId to the source environments because it is a previous environment in $($channelInfo.Channel.Name)"
+                                    $sourceEnvironments += $environmentId
+                                }
+                            }
+                
+                            if ($previousLifecyclePhase.IsOptionalPhase -eq $false)
+                            {
+                                Write-Verbose "The phase $($previousLifecyclePhase.Name) is required, stopping the search for previous phases."
+                                break
+                            }
+                        }       
+                    }  
+                
+                    return ,$sourceEnvironments
+                }
+                
+                
+                function Get-MatchingDeployedVersion
+                {
+                    param(
+                        $deploymentTasks,
+                        $dependency,        
+                        $space,
+                        $octopusUrl,
+                        $octopusApiKey
+                    )    
+                    
+                    foreach ($task in $deploymentTasks)
+                    {
+                        $deploymentInformation = Invoke-OctopusApi -octopusUrl $parameterOctopusInstance -endPoint "deployments/$($task.Arguments.DeploymentId)" -spaceId $space.Id -apiKey $parameterOctopusAPIKey -method "GET"
+                        $releaseInformation = Invoke-OctopusApi -octopusUrl $parameterOctopusInstance -endPoint "releases/$($deploymentInformation.ReleaseId)" -spaceId $space.Id -apiKey $parameterOctopusAPIKey -method "GET"
+                
+                        if (Test-VersionMatchesPattern -versionToCheck $releaseInformation.Version -versionPatternToCheckAgainst $dependency.versionPattern)
+                        {
+                            Write-Host "Found a deployment of $($dependency.ProjectName) with version $($releaseInformation.Version) which satisfies the minimum version requirement of $($dependency.versionPattern)"
+                            return $releaseInformation
+                            break
+                        }
+                    }
+                
+                    return @{ 
+                        "Version" = $null
+                        "Id" = $null
+                    }
+                }
+                
+                function Test-VersionMatchesPattern
+                {
+                    param(
+                        $versionToCheck,
+                        $versionPatternToCheckAgainst
+                    )
+                
+                    $localVersionToCheck = Remove-PreReleaseTag -version $versionToCheck    
+                    $localVersion = Convert-Version $localVersionToCheck
+                
+                    $localPatternToCheckAgainst = Remove-PreReleaseTag -version $versionPatternToCheckAgainst            
+                
+                    # Major wildcard - similar to ^ (e.g. 2.x)
+                    if ($localPatternToCheckAgainst -match '^(\d+)\.x$') {        
+                        $doesMatch = ($localVersion[0] -eq [int]$matches[1])
+                
+                        Write-MatchMessage -doesMatch $doesMatch -version $localVersionToCheck -pattern $versionPatternToCheckAgainst
+                
+                        return $doesMatch
+                    }
+                
+                    # Exact version
+                    if ($localPatternToCheckAgainst -match '^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?$') {
+                        $p = Convert-Version $localPatternToCheckAgainst
+                        $doesMatch = ((Compare-Version $localVersion $p) -eq 0)
+                
+                        Write-MatchMessage -doesMatch $doesMatch -version $localVersionToCheck -pattern $versionPatternToCheckAgainst
+                
+                        return $doesMatch                 
+                    }
+                
+                    # Greater than any version specified (e.g. >1.2.3 or >1.2.3.4)
+                    if ($localPatternToCheckAgainst -match '>(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?$') {
+                        $p = Convert-Version ($localPatternToCheckAgainst.Substring(1))
+                        $doesMatch = ((Compare-Version $localVersion $p) -ge 0)
+                
+                        Write-MatchMessage -doesMatch $doesMatch -version $localVersionToCheck -pattern $versionPatternToCheckAgainst
+                
+                        return $doesMatch                 
+                    }
+                
+                    # Caret range - major version is locked (e.g. ^1.2.3 or ^1.2.3.4)
+                    if ($localPatternToCheckAgainst -match '^\^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?$') {
+                        $p = Convert-Version ($localPatternToCheckAgainst.Substring(1))
+                        $doesMatch = ($localVersion[0] -eq $p[0] -and ((Compare-Version $localVersion $p) -ge 0))
+                
+                        Write-MatchMessage -doesMatch $doesMatch -version $localVersionToCheck -pattern $versionPatternToCheckAgainst
+                
+                        return $doesMatch
+                    }
+                
+                    # Tilde range - major and minor versions are locked (e.g. ~1.2.3 or ~1.2.3.4)
+                    if ($localPatternToCheckAgainst -match '^~(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?$') {
+                        $p = Convert-Version ($localPatternToCheckAgainst.Substring(1))
+                        $doesMatch = ($localVersion[0] -eq $p[0] -and $localVersion[1] -eq $p[1] -and (Compare-Version $localVersion $p) -ge 0)
+                
+                        Write-MatchMessage -doesMatch $doesMatch -version $localVersionToCheck -pattern $versionPatternToCheckAgainst
+                
+                        return $doesMatch
+                    }
+                
+                    Write-Host "The version pattern $versionPatternToCheckAgainst is not recognized, unable to compare versions."
+                    return $false
+                }
+                
+                function Test-VersionIsNewer{
+                    param(
+                        $targetEnvironmentVersion,
+                        $sourceEnvironmentVersion
+                    )
+                
+                    if ($null -eq $sourceEnvironmentVersion)
+                    {
+                        Write-Host "The source environment does not have a version matching the pattern deployed, therefore it cannot be newer than the target environment."
+                        return $false
+                    }
+                
+                    if ($null -eq $targetEnvironmentVersion -and $null -ne $sourceEnvironmentVersion)
+                    {
+                        Write-Host "The target environment does not have does not have a version matching the pattern deployed while the source environment does.  Therefore the source environment version $sourceEnvironmentVersion is considered newer."
+                        return $true
+                    }    
+                
+                    $localTargetEnvVersionToCheck = Remove-PreReleaseTag -version $targetEnvironmentVersion    
+                    $localTargetEnvVersion = Convert-Version $localTargetEnvVersionToCheck
+                
+                    $localSourceEnvVersionToCheck = Remove-PreReleaseTag -version $sourceEnvironmentVersion    
+                    $localSourceEnvVersion = Convert-Version $localSourceEnvVersionToCheck
+                
+                    $isNewer = (Compare-Version $localSourceEnvVersion $localTargetEnvVersion) -gt 0
+                
+                    if ($isNewer)
+                    {
+                        Write-Host "The source environment version $sourceEnvironmentVersion is newer than the target environment version $targetEnvironmentVersion"
+                    }
+                    else
+                    {
+                        Write-Host "The source environment version $sourceEnvironmentVersion is NOT newer than the target environment version $targetEnvironmentVersion"
+                    }
+                
+                    return $isNewer
+                }
+                
+                function Convert-Version 
+                {
+                    param ($v)
+                
+                    if ($v -notmatch '^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?$') {
+                        throw "Invalid version format: $v"
+                    }
+                
+                    return @(
+                        [int]$matches[1],
+                        [int]$matches[2],
+                        [int]$matches[3],
+                        [int]($matches[4] ?? 0)
+                    )
+                }
+                
+                function Compare-Version {
+                    param ($a, $b)
+                
+                    for ($i = 0; $i -lt 4; $i++) {
+                        if ($a[$i] -gt $b[$i]) { return 1 }
+                        if ($a[$i] -lt $b[$i]) { return -1 }
+                    }
+                
+                    return 0
+                }
+                
+                function Write-MatchMessage {
+                    param(
+                        $doesMatch,
+                        $version,
+                        $pattern
+                    )
+                
+                    if ($doesMatch)
+                    {
+                        Write-Host "The version $version satisfies the pattern $pattern"
+                    }
+                    else
+                    {
+                        Write-Host "The version $version does not satisfy the pattern $pattern"
+                    }
+                }
+                
+                function Remove-PreReleaseTag
+                {
+                    param(
+                        $version
+                    )
+                
+                    $localVersionToCheck = $version
+                    if ($localVersionToCheck -like "*-*")
+                    {
+                        Write-Verbose "Version $version contains a pre-release tag ($($localVersionToCheck.Substring($localVersionToCheck.IndexOf("-")))), removing that for comparison purposes"
+                        $localVersionToCheck = $localVersionToCheck.SubString(0, $localVersionToCheck.IndexOf("-"))
+                    }
+                
+                    if ($localVersionToCheck -like "*+*")
+                    {
+                        Write-Verbose "Version $version contains a pre-release tag ($($localVersionToCheck.Substring($localVersionToCheck.IndexOf("+")))), removing that for comparison purposes"
+                        $localVersionToCheck = $localVersionToCheck.SubString(0, $localVersionToCheck.IndexOf("+"))
+                    }
+                
+                    return $localVersionToCheck
+                }
+                
+                function Get-VersionCompareResult {
+                    param(
+                        $deployedVersion,
+                        $sourceVersionToDeploy,
+                        $dependency,
+                        $environment,
+                        $dependencyAction,
+                        $approvalRequested
+                    )
+                
+                    $deploymentIsNeeded = $false
+                    $failDeployment = $false
+                    $approvalRequired = $false
+                    $reason = $null
+                
+                    if ($null -ne $deployedVersion -and $null -ne $sourceVersionToDeploy)
+                    {
+                        $versionComparison = Test-VersionIsNewer -targetEnvironmentVersion $deployedVersion -sourceEnvironmentVersion $sourceVersionToDeploy
+                    }
+                    else
+                    {
+                        $versionComparison = $false
+                    }
+                
+                    $loweredDependencyAction = $dependencyAction.ToLower().Trim()
+                    Write-Host "The dependency action for $($dependency.ProjectName) is $loweredDependencyAction and the approval requested value is $approvalRequested"
+                    Write-Host "The deployed version for $($dependency.ProjectName) in $($environment.Name) is $deployedVersion and the source version to deploy from previous environments is $sourceVersionToDeploy.  The version comparison result is $versionComparison (true means the source version to deploy is newer than the deployed version, false means it is not newer or a version was not found in one of the environments)."
+                
+                    if ($null -eq $deployedVersion -and $null -eq $sourceVersionToDeploy -and $loweredDependencyAction -eq "stop")
+                    {
+                        $failDeployment = $true
+                        $reason = "❌ $($dependency.ProjectName) does not have a version in $($environment.Name) that matches $($dependency.versionPattern), and there is no version matching $($dependency.versionPattern) in previous environments to deploy.  The action is Stop, so failing the deployment."        
+                    }
+                    elseif ($null -eq $deployedVersion -and $null -eq $sourceVersionToDeploy -and $loweredDependencyAction -like "deploy*")
+                    {
+                        $failDeployment = $true
+                        $reason = "❌ $($dependency.ProjectName) does not have a version in $($environment.Name) that matches $($dependency.versionPattern), and there is no version matching $($dependency.versionPattern) in previous environments to deploy.  The action is to deploy a newer version, but there is no version to deploy, so failing the deployment."        
+                    }
+                    elseif ($null -eq $deployedVersion -and $null -eq $sourceVersionToDeploy -and $loweredDependencyAction -eq "continue" -and $approvalRequested -eq "Yes")
+                    {
+                        $approvalRequired = $true
+                        $reason = "⚠️ $($dependency.ProjectName) does not have a version in $($environment.Name) that matches $($dependency.versionPattern), and there is no version matching $($dependency.versionPattern) in previous environments to deploy.  The action is Continue and a Approval is required to continue."
+                    }
+                    elseif ($null -eq $deployedVersion -and $null -eq $sourceVersionToDeploy -and $loweredDependencyAction -eq "continue" -and $approvalRequested -eq "No")
+                    {        
+                        $reason = "✅ $($dependency.ProjectName) does not have a version in $($environment.Name) that matches $($dependency.versionPattern), and there is no version matching $($dependency.versionPattern) in previous environments to deploy.  The action is Continue but NO Approval is required to continue."
+                    }
+                    elseif ($null -eq $deployedVersion -and $null -ne $sourceVersionToDeploy -and $loweredDependencyAction -eq "stop")
+                    {
+                        $failDeployment = $true
+                        $reason = "❌ $($dependency.ProjectName) does not have a version in $($environment.Name) that matches $($dependency.versionPattern). It needs to deploy $($sourceVersionToDeploy), but the action is Stop, so failing the deployment."
+                    }
+                    elseif ($null -eq $deployedVersion -and $null -ne $sourceVersionToDeploy -and $loweredDependencyAction -eq "continue" -and $approvalRequested -eq "Yes")
+                    {
+                        $approvalRequired = $true
+                        $reason = "✅ $($dependency.ProjectName) does not have a version in $($environment.Name) that matches $($dependency.versionPattern). It needs to deploy $($sourceVersionToDeploy).  The action is Continue and Approval is required to continue."
+                    }
+                    elseif ($null -eq $deployedVersion -and $null -ne $sourceVersionToDeploy -and $loweredDependencyAction -eq "continue" -and $approvalRequested -eq "No")
+                    {                
+                        $reason = "✅ $($dependency.ProjectName) does not have a version in $($environment.Name) that matches $($dependency.versionPattern). It needs to deploy $($sourceVersionToDeploy), but the action is Continue but NO Approval is required to continue deployment without deploying dependencies."
+                    }
+                    elseif ($null -eq $deployedVersion -and $null -ne $sourceVersionToDeploy -and $loweredDependencyAction -like "deploy*" -and $approvalRequested -eq "Yes")
+                    {
+                        $approvalRequired = $true
+                        $deploymentIsNeeded = $true
+                        $reason = "⚠️ $($dependency.ProjectName) does not have a version in $($environment.Name) that matches $($dependency.versionPattern). We will deploy $($sourceVersionToDeploy).  Approval is required to continue."
+                    }
+                    elseif ($null -eq $deployedVersion -and $null -ne $sourceVersionToDeploy -and $loweredDependencyAction -like "deploy*" -and $approvalRequested -eq "No")
+                    {     
+                        $deploymentIsNeeded = $true           
+                        $reason = "✅ $($dependency.ProjectName) does not have a version in $($environment.Name) that matches $($dependency.versionPattern). We will deploy $($sourceVersionToDeploy), and NO Approval is required to continue deployment."
+                    }
+                    elseif ($null -ne $deployedVersion -and $null -ne $sourceVersionToDeploy -and $versionComparison -eq $false)
+                    {        
+                        $reason = "✅ $($dependency.ProjectName) has version $($deployedVersion) in $($environment.Name) which matches $($dependency.versionPattern) and is the latest version.  No deployment needed for $($dependency.ProjectName)."        
+                    }
+                    elseif ($null -ne $deployedVersion -and $null -ne $sourceVersionToDeploy -and $versionComparison -eq $true -and ($loweredDependencyAction -eq "stop" -or $loweredDependencyAction -eq "continue"))
+                    {        
+                        $reason = "✅ $($dependency.ProjectName) has version $($deployedVersion) in $($environment.Name) which matches $($dependency.versionPattern).  Version $($sourceVersionToDeploy) was found in a previous environment and is newer.  The requirements are met and no deployment was requested, so no deployment will be performed on $($dependency.ProjectName)."        
+                    }    
+                    elseif ($null -ne $deployedVersion -and $null -ne $sourceVersionToDeploy -and $versionComparison -eq $true -and $loweredDependencyAction -eq "deploynomatchingintarget")
+                    {        
+                        $reason = "✅ $($dependency.ProjectName) has version $($deployedVersion) in $($environment.Name) which matches $($dependency.versionPattern).  Version $($sourceVersionToDeploy) was found in a previous environment and is newer.  The action is to only deploy when there is nothing matching in $($environment.Name), so no deployment will be performed on any dependencies."        
+                    }
+                    elseif ($null -ne $deployedVersion -and $null -ne $sourceVersionToDeploy -and $versionComparison -eq $true -and $loweredDependencyAction -eq "deploynewermatching" -and $approvalRequested -eq "Yes")
+                    {        
+                        $approvalRequired = $true
+                        $deploymentIsNeeded = $true
+                        $reason = "⚠️ $($dependency.ProjectName) has version $($deployedVersion) in $($environment.Name) which matches $($dependency.versionPattern).  Version $($sourceVersionToDeploy) was found in a previous environment and is newer.  The dependency action is set to Deploy Newer Matching, so $($sourceVersionToDeploy) will be deployed.  Approval is required to continue."
+                    }    
+                    elseif ($null -ne $deployedVersion -and $null -ne $sourceVersionToDeploy -and $versionComparison -eq $true -and $loweredDependencyAction -eq "deploynewermatching" -and $approvalRequested -eq "No")
+                    {                
+                        $deploymentIsNeeded = $true
+                        $reason = "⚠️ $($dependency.ProjectName) has version $($deployedVersion) in $($environment.Name) which matches $($dependency.versionPattern).  Version $($sourceVersionToDeploy) was found in a previous environment and is newer.  The dependency action is set to Deploy Newer Matching and approval is not requested, so $($sourceVersionToDeploy) will be deployed without approval."
+                    }
+                    elseif ($null -ne $deployedVersion -and $null -eq $sourceVersionToDeploy)
+                    {
+                        $reason = "✅ $($dependency.ProjectName) has version $($deployedVersion) in $($environment.Name) which matches $($dependency.versionPattern).  A previous environment was not detected (likely due to being first in the lifecycle).  All conditions are met.  No deployment needed for $($dependency.ProjectName)."
+                    }
+                    else
+                    {
+                        Write-Highlight "❌ Unhandled version comparison case for dependency $($dependency.ProjectName).  Stopping deployment."
+                        Write-Error "Encountered an edge case when comparing versions, exiting with an exit code of 1 to prevent problems."
+                        exit 1
+                    }   
+                
+                    return @{
+                        "DeploymentIsNeeded" = $deploymentIsNeeded
+                        "FailDeployment" = $failDeployment
+                        "ApprovalRequired" = $approvalRequired
+                        "Reason" = $reason
+                    }
+                }
+                
+                function Get-DependencyAction {
+                    param(
+                        $dependencyAction,
+                        $defaultDependencyAction,
+                        $dependency
+                    )
+                
+                    if ($null -ne $dependencyAction)
+                    {
+                        Write-Verbose "The dependency action passed in was $null, returning the default dependency action to use for this dependency check"
+                        return $defaultDependencyAction
+                    }
+                
+                    if ([string]::IsNullOrWhiteSpace($dependencyAction))
+                    {
+                        Write-Verbose "The dependency action passed in was an empty string, returning the default dependency action"
+                        return $defaultDependencyAction
+                    }
+                
+                    if ($dependencyAction.ToLower().Trim() -eq "stop" -or $dependencyAction.ToLower().Trim() -eq "continue" -or $dependencyAction.ToLower().Trim() -eq "deploynewermatching" -or $dependencyAction.ToLower().Trim() -eq "deploynomatchingintarget")
+                    {
+                        Write-Verbose "The dependency action passed in was $dependencyAction, returning that as the dependency action to use for this dependency check"
+                        return $dependencyAction
+                    }
+                
+                    Write-Highlight "⚠️ The dependency action passed for $($dependency.ProjectName) was $dependencyAction which is not a valid dependency action.  The valid dependency actions are Stop, Continue, DeployNewerMatching, and DeployNoMatchingInTarget.  Using the default dependency action for this dependency check, which is $defaultDependencyAction"
+                    return $defaultDependencyAction
+                }
+                
+                function Get-SNoWChangeRequestNumber {
+                    param(
+                        $changeRequestNumber,
+                        $environment,
+                        $project,
+                        $reuseChangeRequest
+                    )
+                
+                    if ([string]::IsNullOrWhiteSpace($reuseChangeRequest) -or $reuseChangeRequest -eq "No")
+                    {
+                        Write-Verbose "The reuse change request variable is set to No, returning null for the change request id to ensure a new change request is created for this deployment"
+                        return $null
+                    }
+                
+                    if ([string]::IsNullOrWhiteSpace($changeRequestNumber))
+                    {
+                        Write-Verbose "The change request number passed in was empty or whitespace, returning null for the change request id"
+                        return $null
+                    }
+                
+                    if ($changeRequestNumber -like "#{Octopus*")
+                    {
+                        Write-Verbose "The change request number passed in was $changeRequestNumber, which is a variable reference, returning null for the change request id"
+                        return $null
+                    }
+                
+                    $environmentHasSNoWIntegration = $false
+                    foreach ($extension in $environment.ExtensionSettings)
+                    {
+                        if ($extension.ExtensionId -eq "servicenow-integration")
+                        {
+                            $environmentHasSNoWIntegration = $extension.Values.ServiceNowChangeControlled
+                            break
+                        }
+                    }
+                
+                    if ($environmentHasSNoWIntegration -eq $false)
+                    {
+                        Write-Verbose "The environment $($environment.Name) does not have the ServiceNow integration, returning null for the change request id"
+                        return $null
+                    }
+                
+                    $projectHasSNoWIntegration = $false
+                    foreach ($extension in $project.ExtensionSettings)
+                    {
+                        if ($extension.ExtensionId -eq "servicenow-integration")
+                        {
+                            $projectHasSNoWIntegration = $extension.Values.ServiceNowChangeControlled
+                            break
+                        }
+                    }
+                
+                    if ($projectHasSNoWIntegration -eq $false)
+                    {
+                        Write-Verbose "The project $($project.Name) does not have the ServiceNow integration, returning null for the change request id"
+                        return $null
+                    }
+                
+                    return $changeRequestNumber
+                }
+                
+                function Get-JSMChangeRequestNumber {
+                    param(
+                        $changeRequestNumber,
+                        $environment,
+                        $project,
+                        $reuseChangeRequest
+                    )
+                
+                    if ([string]::IsNullOrWhiteSpace($reuseChangeRequest) -or $reuseChangeRequest -eq "No")
+                    {
+                        Write-Verbose "The reuse change request variable is set to No, returning null for the change request id to ensure a new change request is created for this deployment"
+                        return $null
+                    }
+                
+                    if ([string]::IsNullOrWhiteSpace($changeRequestNumber))
+                    {
+                        Write-Verbose "The change request number passed in was empty or whitespace, returning null for the change request id"
+                        return $null
+                    }
+                
+                    if ($changeRequestNumber -like "#{Octopus*")
+                    {
+                        Write-Verbose "The change request number passed in was $changeRequestNumber, which is a variable reference, returning null for the change request id"
+                        return $null
+                    }
+                
+                    $environmentHasSNoWIntegration = $false
+                    foreach ($extension in $environment.ExtensionSettings)
+                    {
+                        if ($extension.ExtensionId -eq "jiraservicemanagement-integration")
+                        {
+                            $environmentHasSNoWIntegration = $extension.Values.JsmChangeControlled
+                            break
+                        }
+                    }
+                
+                    if ($environmentHasSNoWIntegration -eq $false)
+                    {
+                        Write-Verbose "The environment $($environment.Name) does not have the JSM integration, returning null for the change request id"
+                        return $null
+                    }
+                
+                    $projectHasSNoWIntegration = $false
+                    foreach ($extension in $project.ExtensionSettings)
+                    {
+                        if ($extension.ExtensionId -eq "jiraservicemanagement-integration")
+                        {
+                            $projectHasSNoWIntegration = $extension.Values.JsmChangeControlled
+                            break
+                        }
+                    }
+                
+                    if ($projectHasSNoWIntegration -eq $false)
+                    {
+                        Write-Verbose "The project $($project.Name) does not have the JSM integration, returning null for the change request id"
+                        return $null
+                    }
+                
+                    return $changeRequestNumber
+                }
+                
+                function Get-GuidedFailureMode
+                {
+                    param (
+                        $environment,
+                        $project
+                    )
+                
+                    if ($project.DefaultGuidedFailureMode -eq "DefaultGuidedFailureMode")
+                    {
+                        Write-Verbose "The project $($project.Name) is configured to use the environmental default, returning that as the guided failure mode"
+                        return $environment.UseGuidedFailure
+                    }
+                
+                    if ($project.DefaultGuidedFailureMode -eq "On")
+                    {
+                        Write-Verbose "The project $($project.Name) is configured to use guided failure, returning that as the guided failure mode"
+                        return $true
+                    } 
+                
+                    return $false
+                }
+                
+                function Get-DependencyList
+                {
+                    param (
+                        $parameterDependenciesAsJSON
+                    )
+                
+                    if ([string]::IsNullOrWhiteSpace($parameterDependenciesAsJSON))
+                    {
+                        Write-Highlight "❌ The parameter dependencies was empty or whitespace, stopping the deployment since we don't know what dependencies to check"
+                        exit 1
+                    }
+                
+                    $dependencyList = @(ConvertFrom-Json $parameterDependenciesAsJSON)
+                
+                    if ($dependencyList.Count -eq 0)
+                    {
+                        Write-Highlight "❌ The parameter dependencies did not contain any dependencies, stopping the deployment since we don't know what dependencies to check"
+                        exit 1
+                    }
+                
+                    foreach ($dependency in $dependencyList)
+                    {
+                        if ([string]::IsNullOrWhiteSpace($dependency.ProjectName))
+                        {
+                            Write-Highlight "❌ One of the dependencies is missing the Project Name.  Stopping the deployment since we don't have enough information to check the dependencies."
+                            exit 1
+                        }
+                
+                        if ([string]::IsNullOrWhiteSpace($dependency.VersionPattern))
+                        {
+                            Write-Highlight "❌ $($dependency.ProjectName) is missing the Version Pattern.  Stopping the deployment since we don't have enough information to check the dependencies."
+                            exit 1
+                        }  
+                        
+                        if ($null -ne $dependency.DeployGroup -and ($null -eq ($dependency.DeployGroup -as [int])))
+                        {
+                            Write-Highlight "❌ $($dependency.ProjectName) has a Deploy Group value that is not an integer.  The deploy group can be null or an integer, but not a string.  Stopping the deployment."
+                            exit 1
+                        }
+                
+                        if ($null -eq $dependency.PromptedVariables)
+                        {
+                            continue
+                        }
+                
+                        foreach ($variable in $dependency.PromptedVariables)
+                        {
+                            if ([string]::IsNullOrWhiteSpace($variable.Name))
+                            {
+                                Write-Highlight "❌ One of the prompted variables for $($dependency.ProjectName) is missing the name property.  Stopping the deployment since it will fail when we try to do a deployment for the project."
+                                exit 1
+                            }
+                
+                            if ([string]::IsNullOrWhiteSpace($variable.Value))
+                            {
+                                Write-Highlight "❌ One of the prompted variables for $($dependency.ProjectName) is missing the value property.  Stopping the deployment since it will fail when we try to do a deployment for the project."
+                                exit 1
+                            }
+                        }
+                    }
+                
+                    return ,$dependencyList
+                }
+                
+                function Test-InputStringParameter
+                {
+                    param(
+                        $parameterValue,
+                        $parameterName
+                    )
+                
+                    if ([string]::IsNullOrWhiteSpace($parameterValue))
+                    {
+                        Write-Highlight "❌ The parameter for $parameterName is empty or whitespace.  This parameter is required to check dependencies, so stopping the deployment."
+                        exit 1
+                    }
+                }
+                
+                Test-InputStringParameter -parameterValue $parameterOctopusAPIKey -parameterName "Octopus API Key"
+                Test-InputStringParameter -parameterValue $parameterTargetEnvironmentName -parameterName "Target Environment Name"
+                Test-InputStringParameter -parameterValue $parameterOlderDependencyAction -parameterName "Default Dependency Action"
+                Test-InputStringParameter -parameterValue $parameterApprovalRequested -parameterName "Approval Requested"
+                Test-InputStringParameter -parameterValue $parameterReuseChangeRequest -parameterName "Reuse Change Request"
+                
+                $dependencyList = Get-DependencyList -parameterDependenciesAsJSON $parameterDependencies
+                
+                $defaultSpace = Get-OctopusItemByName -itemName $parameterSpaceName -itemType "Space" -endpoint "spaces" -defaultValue $null -spaceId $null -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey
+                $defaultEnvironment = Get-OctopusItemByName -itemName $parameterTargetEnvironmentName -itemType "Environment" -endpoint "environments" -defaultValue $null -spaceId $defaultSpace.Id -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey
+                $defaultTenant = Get-OctopusItemByName -itemName $parameterTenantName -itemType "Tenant" -endpoint "tenants" -defaultValue $null -spaceId $defaultSpace.Id -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey
+                
+                $dependencyResultList = @()
+                $approvalMessageList = @()
+                $requiredDeployment = $false
+                $failEntireDeployment = $false
+                $requireManualIntervention = $false
+                foreach ($dependency in $dependencyList)
+                {
+                    # Gather basic information about the dependency such as the space, environment, project, and tenant it is referring to.  We will use this information to pull deployment information to compare against the dependency requirements.
+                    $space = Get-OctopusItemByName -itemName $dependency.SpaceName -itemType "Space" -endpoint "spaces" -defaultValue $defaultSpace -spaceId $null -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey    
+                    $project = Get-OctopusItemByName -itemName $dependency.ProjectName -itemType "Project" -endpoint "projects" -defaultValue $null -spaceId $space.Id -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey
+                    $tenant = Get-OctopusItemByName -itemName $dependency.TenantName -itemType "Tenant" -endpoint "tenants" -defaultValue $defaultTenant -spaceId $space.Id -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey
+                
+                    # Check to see if the dependency has a specific dependency action specified, if not use the default dependency action passed in as a parameter
+                    $dependencyAction = Get-DependencyAction -dependencyAction $dependency.DependencyAction -defaultDependencyAction $parameterOlderDependencyAction -dependency $dependency  
+                
+                    # If enough people want to be able to override the environment, we can quickly add the logic here
+                    $environment = $defaultEnvironment
+                
+                    # If we have to trigger a deployment it's best to reuse the guided failure mode of the project / environment
+                    $guidedFailureMode = Get-GuidedFailureMode -environment $environment -project $project
+                
+                    # Get Information about the source environments from the channels matching the target environment
+                    $matchingChannels = Get-ProjectChannelsWithDestinationEnvironment -project $project -environment $environment -spaceId $space.Id -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey
+                    $sourceEnvironments = Get-SourceEnvironmentsFromPhase -matchingChannels $matchingChannels -environment $environment
+                
+                    # Wait for active deployments to finish before pulling deployment information to ensure we have the most up to date information
+                    Wait-ForExecutingTasksToComplete -spaceId $space.Id -project $project -tenant $tenant -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey -sourceEnvironmentList $sourceEnvironments -targetEnvironment $environment
+                
+                    # Pull in the last 20 successful deployments for the target environment and find the deployed version that matches the dependency pattern if it exists
+                    $deploymentTasks = Get-SuccessfulDeploymentTasks -spaceId $space.Id -project $project -tenant $tenant -environmentList @($environment.Id) -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey
+                    $deployedVersion = Get-MatchingDeployedVersion -dependency $dependency -deploymentTasks $deploymentTasks -space $space -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey  
+                        
+                    # Pull in the last 20 successful deployments for the source environments to find a version to deploy if needed
+                    $sourceDeploymentTasks = Get-SuccessfulDeploymentTasks -spaceId $space.Id -project $project -tenant $tenant -environmentList $sourceEnvironments -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey
+                    $sourceVersionToDeploy = Get-MatchingDeployedVersion -dependency $dependency -deploymentTasks $sourceDeploymentTasks -space $space -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey
+                
+                    # Pull the change request number to send to the dependencies
+                    $snowChangeRequestNumber = Get-SNoWChangeRequestNumber -changeRequestNumber $octopusVariableServiceNowChangeRequestNumber -environment $environment -project $project -reuseChangeRequest $parameterReuseChangeRequest
+                    $jsmChangeRequestNumber = Get-JSMChangeRequestNumber -changeRequestNumber $octopusVariableJSMChangeRequestNumber -environment $environment -project $project -reuseChangeRequest $parameterReuseChangeRequest
+                
+                    # Get the action that we want to perform based on the version comparison and the dependency action specified
+                    $dependencyCompareResult = Get-VersionCompareResult -deployedVersion $deployedVersion.Version -sourceVersionToDeploy $sourceVersionToDeploy.Version -dependency $dependency -environment $environment -dependencyAction $dependencyAction -approvalRequested $parameterApprovalRequested
+                
+                    Write-Highlight "$($dependencyCompareResult.Reason)"
+                    
+                    if ($dependencyCompareResult.DeploymentIsNeeded -eq $true)
+                    {
+                        $requiredDeployment = $true
+                    }
+                
+                    if ($dependencyCompareResult.FailDeployment -eq $true)
+                    {
+                        $failEntireDeployment = $true
+                    }
+                
+                    if ($dependencyCompareResult.ApprovalRequired -eq $true)
+                    {
+                        $requireManualIntervention = $true
+                        $approvalMessageList += $dependencyCompareResult.Reason
+                        $approvalMessageList += ""
+                    }
+                
+                    if ($null -eq $sourceVersionToDeploy.Version)
+                    {
+                        $sourceVersionToDeploy = "N/A"
+                    }
+                
+                    $dependencyResult = @{
+                        "ProjectName" = $dependency.ProjectName
+                        "ProjectId" = $project.Id        
+                        "SpaceName" = $space.Name
+                        "SpaceId" = $space.Id
+                        "VersionPattern" = $dependency.VersionPattern
+                        "DeployedVersion" = $deployedVersion.Version        
+                        "DeployedReleaseId" = $deployedVersion.Id
+                        "DeployGroup" = $dependency.DeployGroup                
+                        "VersionToDeploy" = $sourceVersionToDeploy.Version
+                        "ReleaseIdToDeploy" = $sourceVersionToDeploy.Id
+                        "DeploymentIsNeeded" = $dependencyCompareResult.DeploymentIsNeeded
+                        "TargetEnvironmentName" = $environment.Name
+                        "TargetEnvironmentId" = $environment.Id
+                        "SnowChangeRequestNumber" = $snowChangeRequestNumber
+                        "JSMChangeRequestNumber" = $jsmChangeRequestNumber
+                        "GuidedFailures" = $guidedFailureMode
+                        "PromptedVariables" = @()
+                    }
+                
+                    if ($null -ne $dependency.PromptedVariables)
+                    {
+                        $dependencyResult.PromptedVariables = $dependency.PromptedVariables
+                    }
+                
+                    if ($null -ne $tenant)
+                    {
+                        $dependencyResult["TenantId"] = $tenant.Id
+                        $dependencyResult["TenantName"] = $tenant.Name
+                    }
+                
+                    $dependencyResultList += $dependencyResult
+                }
+                
+                $approvalResult = $approvalMessageList -join "`n"
+                Write-Host "Adding ApprovalMessages as an output variable with the value $approvalResult"
+                Set-OctopusVariable -name "ApprovalMessages" -value $approvalResult
+                Write-Host "Access it from future steps using: #{Octopus.ProcessTemplate.Action[$stepName].Output.ApprovalMessages}"
+                
+                $dependencyResultAsString = ConvertTo-Json $dependencyResultList -Depth 10
+                Write-Host "Adding DependencyResult as an output variable with the value $dependencyResultAsString"
+                Set-OctopusVariable -name "DependencyResult" -value $dependencyResultAsString
+                Write-Host "Access it from future steps using: #{Octopus.ProcessTemplate.Action[$stepName].Output.DependencyResult}"
+                
+                Write-Host "Adding ApprovalRequired as an output variable with the value $requireManualIntervention"
+                Set-OctopusVariable -name "ApprovalRequired" -value $requireManualIntervention
+                Write-Host "Access it from future steps using: #{Octopus.ProcessTemplate.Action[$stepName].Output.ApprovalRequired}"
+                
+                Write-Host "Adding DeployDependencies as an output variable with the value $requiredDeployment"
+                Set-OctopusVariable -name "DeployDependencies" -value $requiredDeployment
+                Write-Host "Access it from future steps using: #{Octopus.ProcessTemplate.Action[$stepName].Output.DeployDependencies}"
+                
+                if ($failEntireDeployment -eq $true)
+                {
+                    Write-Highlight "❌ One or more dependencies failed to meet the version requirements and the action is to Stop, failing the deployment."
+                    exit 1
+                }
+                elseif ($requiredDeployment -eq $false -and $requireManualIntervention -eq $false)
+                {
+                    Write-Highlight "✅ All dependencies satisfy the version requirements and no deployments were requested, you are clear to deploy the main project."    
+                }
+                elseif ($requiredDeployment -eq $true -and $requireManualIntervention -eq $false)
+                {
+                    Write-Highlight "⚠️ At least one deployment will be performed to satisfy the dependencies but NO manual intervention is required."
+                }
+                elseif ($requiredDeployment -eq $true -and $requireManualIntervention -eq $true)
+                {
+                    Write-Highlight "⚠️ At least one deployment will be performed to satisfy the dependencies but will pause for a manual intervention."
+                }
+                EOT
+            Octopus.Action.Script.ScriptSource = "Inline"
+            Octopus.Action.Script.Syntax = "PowerShell"
+            OctopusUseBundledTooling = "False"
+        }
+        worker_pool_variable = "#{Template.Worker.Pool}"
+    }
+}
+
+step "approve-dependency-result" {
+    condition = "Variable"
+    name = "Approve Dependency Result"
+    properties = {
+        Octopus.Step.ConditionVariableExpression = "#{unless Octopus.Deployment.Error}#{Octopus.ProcessTemplate.Action[Check Dependencies].Output.ApprovalRequired}#{/unless}"
+    }
+
+    action {
+        action_type = "Octopus.Manual"
+        notes = <<-EOT
+                **Conditionally Runs**
+                
+                Only runs when the `Check Dependencies` step determines that approval is needed to proceed with this deployment.  Possible reasons this step will run include a dependency hasn't been deployed but `Continue` is the selected option with approval requests, or a dependency needs to be deployed but it requires approval.
+                EOT
+        properties = {
+            Octopus.Action.Manual.BlockConcurrentDeployments = "True"
+            Octopus.Action.Manual.Instructions = <<-EOT
+                One or more dependencies are out of date in #{Template.Environment.Name}.  The action is currently set to #{Template.Dependency.Action}
+                
+                Please approve the following before deploying:
+                
+                #{Octopus.ProcessTemplate.Action[Check Dependencies].Output.ApprovalMessages}
+                
+                EOT
+            Octopus.Action.Manual.ResponsibleTeamIds = "#{Template.Approval.Teams}"
+        }
+    }
+}
+
+step "deploy-dependencies" {
+    condition = "Variable"
+    name = "Deploy Dependencies"
+    properties = {
+        Octopus.Step.ConditionVariableExpression = "#{unless Octopus.Deployment.Error}#{Octopus.ProcessTemplate.Action[Check Dependencies].Output.DeployDependencies}#{/unless}"
+    }
+
+    action {
+        action_type = "Octopus.Script"
+        notes = <<-EOT
+                **Conditionally Runs**
+                
+                Only runs when a dependency needs to be deployed and the `Dependency Action` parameter is set to one of the deploy options.
+                EOT
+        properties = {
+            Octopus.Action.RunOnServer = "true"
+            Octopus.Action.Script.ScriptBody = <<-EOT
+                $parameterOctopusAPIKey = $OctopusParameters["Template.Octopus.Api.Key"]    # Octopus Deploy API key
+                $parameterOctopusInstance = $OctopusParameters["Octopus.Web.ServerUri"] # Octopus Deploy instance URL
+                $parameterMinAvailableTaskCapacity = 3 # Minimum available task capacity required before starting a new deployment
+                $parameterDeploymentTimeoutMinutes = 30 # Timeout for each deployment in minutes
+                $parameterDependencyResults = $OctopusParameters["Octopus.ProcessTemplate.Action[Check Dependencies].Output.DependencyResult"] 
+                
+                Write-Host "The dependency results to deploy are $parameterDependencyResults"
+                
+                function Get-OctopusUrl
+                {
+                    param (
+                        $EndPoint,
+                        $SpaceId,
+                        $OctopusUrl
+                    )
+                
+                    $octopusUrlToUse = $OctopusUrl
+                    if ($OctopusUrl.EndsWith("/"))
+                    {
+                        $octopusUrlToUse = $OctopusUrl.Substring(0, $OctopusUrl.Length - 1)
+                    }
+                
+                    if ($EndPoint -match "/api")
+                    {
+                        if (!$EndPoint.StartsWith("/api"))
+                        {
+                            $EndPoint = $EndPoint.Substring($EndPoint.IndexOf("/api"))
+                        }
+                
+                        return "$octopusUrlToUse$EndPoint"
+                    }
+                
+                    if ([string]::IsNullOrWhiteSpace($SpaceId))
+                    {
+                        return "$octopusUrlToUse/api/$EndPoint"
+                    }
+                
+                    return "$octopusUrlToUse/api/$spaceId/$EndPoint"
+                }
+                
+                function Invoke-OctopusApi
+                {
+                    param
+                    (
+                        $octopusUrl,
+                        $spaceId,
+                        $endPoint,
+                        $apiKey,
+                        $method,
+                        $item,        
+                        $retryCount
+                    )
+                
+                    try
+                    {        
+                        $url = Get-OctopusUrl -EndPoint $endPoint -SpaceId $spaceId -OctopusUrl $octopusUrl
+                
+                        if ($null -eq $item)
+                        {            
+                            Write-Verbose "No data to post or put, calling bog standard invoke-restmethod for $url"
+                            return Invoke-RestMethod -Method $method -Uri $url -Headers @{"X-Octopus-ApiKey" = "$ApiKey" } -ContentType 'application/json; charset=utf-8' -TimeoutSec 60
+                        }
+                
+                        $body = $item | ConvertTo-Json -Depth 10
+                        Write-Verbose $body
+                
+                        Write-Verbose "Invoking $method $url"
+                        return Invoke-RestMethod -Method $method -Uri $url -Headers @{"X-Octopus-ApiKey" = "$ApiKey" } -Body $body -ContentType 'application/json; charset=utf-8' -TimeoutSec 60
+                    }
+                    catch [System.TimeoutException]
+                    {        
+                        $newRetryCount = 1
+                        if ($null -ne $retryCount)
+                        {
+                            $newRetryCount = $retryCount + 1
+                        }
+                
+                        if ($newRetryCount -gt 4)
+                        {
+                            Throw "Timeout detected, max retries has been exceeded for this call.  Exiting."
+                        }
+                        else 
+                        {
+                            Write-Host "Timeout detected, going to retry this call for the $newRetryCount time."
+                            Invoke-OctopusApi -url $url -apiKey $apiKey -method $method -item $item -filePath $filePath -retryCount $retryCount        
+                        }
+                    }
+                    catch
+                    {
+                        Write-Highlight "There was an error making a $method call to $url.  All request information (JSON body specifically) is stored in the log.  Please check that for more information."
+                
+                        if ($null -ne $_.Exception.Response)
+                        {
+                            if ($_.Exception.Response.StatusCode -eq 401)
+                            {
+                                Write-Error "Unauthorized error returned from $url, please verify API key and try again"
+                            }
+                            elseif ($_.ErrorDetails.Message)
+                            {                
+                                Write-Error -Message "Error calling $url StatusCode: $($_.Exception.Response) $($_.ErrorDetails.Message)"
+                                Write-Error $_.Exception
+                            }            
+                            else 
+                            {
+                                Write-Error $_.Exception
+                            }
+                        }
+                        else
+                        {
+                            Write-Error $_.Exception
+                        }
+                
+                        Write-Error "Stopping the deployment."
+                        Exit 1
+                    }    
+                }
+                
+                function Get-ListFromOctopusApi
+                {
+                    param (
+                        $octopusUrl,
+                        $endPoint,
+                        $spaceId,
+                        $apiKey,
+                        $propertyName
+                    )
+                
+                    $rawItemList = Invoke-OctopusApi -octopusUrl $octopusUrl -endPoint $endPoint -spaceId $spaceId -apiKey $octopusApiKey -method "GET"
+                
+                    $returnList = @($rawItemList.$propertyName)
+                
+                    Write-Verbose "The endpoint $endPoint returned a list with $($returnList.Count) items"
+                
+                    return ,$returnList
+                }
+                
+                function Get-TaskCapLimitFromApi
+                {
+                    param(
+                        $octopusUrl,
+                        $octopusApiKey
+                    )
+                
+                    $licenseUsage = Invoke-OctopusApi -octopusUrl $octopusUrl -endPoint "licenses/licenses-current-usage" -spaceId $null -apiKey $octopusApiKey -method "GET"
+                    
+                    $taskCapLimit = 0 
+                    $licenseLimitOnTaskCap = $false   
+                
+                    foreach ($limit in $licenseUsage.Limits)
+                    {
+                        if ($limit.Name -eq "Task Cap")
+                        {
+                            $taskCapLimit = $limit.LicensedLimit            
+                            $licenseLimitOnTaskCap = $true
+                            break
+                        }
+                    }
+                
+                    if ($taskCapLimit -eq 0 -or $taskCapLimit -eq 2147483647)
+                    {
+                        $taskCapLimit = 0
+                        Write-Host "The task cap license limit is unlimited, we need to check the nodes to determine the task cap"                
+                        $nodeList = Get-ListFromOctopusApi -octopusUrl $octopusUrl -endPoint "octopusservernodes" -spaceId $null -apiKey $octopusApiKey -property "Items"
+                
+                        foreach ($node in $nodeList)
+                        {
+                            $taskCapLimit += $node.MaxConcurrentTasks
+                        }
+                    }
+                
+                    Write-Host "The task cap for $octopusUrl is $taskCapLimit"
+                
+                    return @{
+                        "Limit" = $taskCapLimit
+                        "LicenseLimitOnTaskCap" = $licenseLimitOnTaskCap
+                    }
+                }
+                
+                function Get-AvailableTaskCapacity
+                {
+                    param(
+                        $octopusUrl,
+                        $octopusApiKey,
+                        $taskCapLimit,
+                        $minAvailableTaskCapacity
+                    )
+                
+                    $currentRunningTaskList = Invoke-OctopusApi -octopusUrl $octopusUrl -endPoint "tasks?skip=0&take=1" -spaceId $null -apiKey $octopusApiKey -method "GET"
+                    $currentRunningTaskCount = $currentRunningTaskList.TotalCounts.Executing
+                
+                    Write-Host "There are currently $currentRunningTaskCount running tasks on $octopusUrl"
+                
+                    $estimatedTaskCapWithNewDeployment = $currentRunningTaskCount + 1
+                    $maxRunningTasksAllowed = $taskCapLimit.Limit - $minAvailableTaskCapacity
+                
+                    if ($estimatedTaskCapWithNewDeployment -gt $maxRunningTasksAllowed)
+                    {
+                        Write-Host "A new deployment would exceed the task cap limit of $($taskCapLimit.TaskCapLimit) and capacity of $minAvailableTaskCapacity required.  Current running tasks: $currentRunningTaskCount, max tasks allowed: $maxRunningTasksAllowed.  Waiting for an available deployment slot..."
+                        return $false
+                    }
+                
+                    Write-Host "A new deployment will set the current running tasks to $estimatedTaskCapWithNewDeployment which is at or below $maxRunningTasksAllowed.  Current running tasks: $currentRunningTaskCount, max tasks allowed: $maxRunningTasksAllowed.  Proceeding with deployment..."
+                    Return $true    
+                }
+                
+                function Wait-ForAvailableCapacity
+                {
+                    param(
+                        $octopusUrl,
+                        $octopusApiKey,
+                        $taskCapLimit,
+                        $minAvailableTaskCapacity
+                    )
+                
+                    $currentCapacityAvailable = $false
+                    do 
+                    {
+                        $currentCapacityAvailable = Get-AvailableTaskCapacity -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey -taskCapLimit $taskCapLimit -minAvailableTaskCapacity $parameterMinAvailableTaskCapacity
+                
+                        if ($currentCapacityAvailable -eq $false)
+                        {
+                            Write-Host "Insufficient task capacity to start deployment for project $($dependency.ProjectName) to environment $($dependency.TargetEnvironmentName), will sleep for 10 seconds and check again..."
+                            Start-Sleep -Seconds 10
+                        }
+                        else 
+                        {
+                            Write-Host "Sufficient task capacity is available to start deployment for project $($dependency.ProjectName) to environment $($dependency.TargetEnvironmentName)."
+                        }
+                    }
+                    while ($currentCapacityAvailable -eq $false)
+                }
+                
+                function Invoke-DependencyDeployment
+                {
+                    param(
+                        $octopusUrl,
+                        $octopusApiKey,
+                        $dependency
+                    )
+                
+                    Write-Host "Pulling in the deployment preview for project $($dependency.ProjectName) to environment $($dependency.TargetEnvironmentName) to check for prompted variables and ensure the deployment can proceed before invoking the deployment..."
+                    $deploymentPreview = Get-DeploymentPreview -octopusUrl $octopusUrl -octopusApiKey $octopusApiKey -dependency $dependency
+                    $promptedVariableValues = Get-ValuesForPromptedVariables -deploymentPreview $deploymentPreview -dependency $dependency
+                
+                    Write-Host "Starting deployment for project $($dependency.ProjectName) to environment $($dependency.TargetEnvironmentName)..."
+                
+                    $deploymentRequest = New-OctopusDeploymentRequest -dependency $dependency -promptedVariables $promptedVariableValues
+                
+                    Write-Host "Deploying $($dependency.VersionToDeploy) for $($dependency.ProjectName) to $($dependency.TargetEnvironmentName)"
+                    $createdDeploymentResponse = Invoke-OctopusApi -method "POST" -endPoint "deployments" -octopusUrl $octopusUrl -apiKey $octopusApiKey -spaceId $dependency.SpaceId -item $deploymentRequest
+                    Write-Host "The task id for the new deployment is $($createdDeploymentResponse.TaskId)"    
+                    
+                    return $createdDeploymentResponse.TaskId
+                }
+                
+                function Get-DeploymentStatus
+                {
+                    param(
+                        $octopusUrl,
+                        $octopusApiKey,
+                        $deploymentTaskId,
+                        $timeoutInMinutes
+                    )
+                
+                    $taskStatusResponse = Invoke-OctopusApi -octopusUrl $octopusUrl -spaceId $spaceId -apiKey $octopusApiKey -endPoint "tasks/$($deploymentTaskId)" -method "GET"   
+                
+                    $taskStatusResponseState = $taskStatusResponse.State
+                
+                    if($taskStatusResponseState -eq "Failed" -or $taskStatusResponseState -eq "Canceled")
+                    {
+                        return $taskStatusResponseState
+                    }
+                
+                    if ($null -ne $taskStatusResponse.StartTime)
+                    {        
+                        $deploymentStartTime = [DateTime]::Parse($taskStatusResponse.StartTime)
+                        Write-Host "The deployment task $deploymentTaskId started at $deploymentStartTime and is currently in state $taskStatusResponseState"
+                        
+                        $currentTime = Get-Date
+                        Write-host "The current time is $currentTime"
+                
+                        $timeDifference = $currentTime - $deploymentStartTime
+                        $timeDifferenceInMinutes = $timeDifference.TotalMinutes
+                        Write-Host "The deployment task $deploymentTaskId has been running for $timeDifferenceInMinutes minutes"
+                
+                        if ($timeDifferenceInMinutes -gt $timeoutInMinutes)
+                        {
+                            Write-Highlight "❌ Deployment task $deploymentTaskId has exceeded the timeout of $timeoutInMinutes minutes.  Stopping further deployments."
+                            Write-Error "Stopping deployment because it exceeded the timeout allowed."
+                            Invoke-OctopusApi -octopusUrl $defaultUrl -apiKey $octopusApiKey -spaceId $spaceId -method "POST" -endPoint "tasks/$($deploymentTaskId)/cancel"    
+                            Exit 1
+                        }
+                    }
+                    
+                    return $taskStatusResponseState
+                }
+                
+                function Get-DeployGroupInfo
+                {
+                    param(
+                        $dependencyResultList
+                    )
+                    
+                    $deployGroupDependencyList = @{}
+                    $deployGroupOrdered = @()
+                    $nullDeployGroupOrder = 2147400000
+                    
+                    foreach ($dependency in $dependencyResultList)
+                    {           
+                        $deployGroup = $dependency.DeployGroup
+                
+                        if ($null -eq $dependency.DeployGroup)
+                        {
+                            Write-Host "The deploy group is empty or null, setting the deploy group to $nullDeployGroupOrder to ensure they are always processed last.  Future log messages will refer to this as deploy group $nullDeployGroupOrder for $($dependency.ProjectName)."
+                            $deployGroup = $nullDeployGroupOrder
+                            $nullDeployGroupOrder += 1
+                        }
+                
+                        Write-Host "The current deploy group being checked is $deployGroup"
+                
+                        if ($deployGroupOrdered -notcontains $deployGroup)
+                        {
+                            Write-Host "Found new deploy group for the ordered list: $deployGroup"
+                            $deployGroupOrdered += $deployGroup            
+                        }
+                
+                        if (($deployGroupDependencyList.ContainsKey($deployGroup)) -eq $false)
+                        {        
+                            $deployGroupDependency = @{
+                                "DependencyList" = @()                
+                            }            
+                
+                            Write-Host "Adding new deploy group dependency entry for deploy group: $deployGroup"
+                            $deployGroupDependencyList.Add($deployGroup, $deployGroupDependency)
+                        }
+                
+                        Write-Host "Adding dependency for project $($dependency.ProjectName) to deploy group $deployGroup"
+                        $deployGroupDependencyList[$deployGroup].DependencyList += ConvertFrom-Dependency -dependency $dependency
+                    }     
+                
+                    $deployGroupOrdered = $deployGroupOrdered | Sort-Object    
+                    
+                    return @{
+                        "DeployGroupDependencyList" = $deployGroupDependencyList
+                        "DeployGroupOrdered" = $deployGroupOrdered
+                    }
+                }
+                
+                function ConvertFrom-Dependency{
+                    param(
+                        $dependency
+                    )
+                
+                    return @{
+                        "ProjectName" = $dependency.ProjectName
+                        "ProjectId" = $dependency.ProjectId
+                        "TargetEnvironmentName" = $dependency.TargetEnvironmentName
+                        "TargetEnvironmentId" = $dependency.TargetEnvironmentId
+                        "DeployGroup" = $dependency.DeployGroup
+                        "SpaceId" = $dependency.SpaceId
+                        "SpaceName" = $dependency.SpaceName
+                        "DeploymentIsNeeded" = $dependency.DeploymentIsNeeded        
+                        "ReleaseIdToDeploy" = $dependency.ReleaseIdToDeploy
+                        "DeployedReleaseId" = $dependency.DeployedReleaseId
+                        "DeployedVersion" = $dependency.DeployedVersion                
+                        "VersionToDeploy" = $dependency.VersionToDeploy
+                        "VersionPattern" = $dependency.VersionPattern
+                        "TenantId" = $dependency.TenantId
+                        "TenantName" = $dependency.TenantName
+                        "SnowChangeRequestNumber" = $dependency.SnowChangeRequestNumber
+                        "JSMChangeRequestNumber" = $dependency.JSMChangeRequestNumber
+                        "PromptedVariables" = @($dependency.PromptedVariables)
+                        "GuidedFailures" = $dependency.GuidedFailures
+                
+                        "DeploymentTaskId" = $null        
+                    }
+                } 
+                
+                function New-OctopusDeploymentRequest {
+                    param(
+                        $dependency,
+                        $promptedVariables
+                    )
+                
+                    Write-Host "Converting the dependency for project $($dependency.ProjectName) to environment $($dependency.TargetEnvironmentName) into a deployment request body for the Octopus API"    
+                    $dependencyAsString = $dependency | ConvertTo-Json -Depth 10
+                    Write-Host $dependencyAsString
+                
+                    Write-Host "The prompted variables that'll be sent in the deployment request are $($promptedVariables | ConvertTo-Json -Depth 10)"
+                
+                    $deploymentRequest = @{
+                        EnvironmentId = $dependency.TargetEnvironmentId;
+                        ExcludeMachineIds = @();
+                        ForcePackageDownload = $false;
+                        ForcePackageRedeployment = $false;
+                        FormValues = $promptedVariables;
+                        QueueTime = $null;
+                        QueueTimeExpiry = $null;
+                        ReleaseId = $dependency.ReleaseIdToDeploy;
+                        SkipActions = @();
+                        SpecificMachineIds = @();
+                        TenantId = $null;
+                        UseGuidedFailure = $dependency.GuidedFailures
+                    }
+                    
+                    if ($null -ne $dependency.TenantId)
+                    {
+                        Write-Host "The dependency has a tenant id of $($dependency.TenantId), adding that to the deployment request body"
+                        $deploymentRequest.TenantId = $dependency.TenantId
+                    }
+                
+                    if ($null -ne $dependency.SnowChangeRequestNumber)
+                    {
+                        Write-Host "The dependency has a ServiceNow change request number of $($dependency.SnowChangeRequestNumber), adding that to the deployment request body under the ChangeRequestSettings property"
+                        $deploymentRequest.ChangeRequestSettings = @(
+                            @{
+                                "ChangeRequestNumber" = $dependency.SnowChangeRequestNumber
+                                "Type" = "ServiceNow"
+                            }
+                        )
+                    }
+                
+                    if ($null -ne $dependency.JSMChangeRequestNumber)
+                    {
+                        Write-Host "The dependency has a JIRA Service Management change request number of $($dependency.JSMChangeRequestNumber), adding that to the deployment request body under the ChangeRequestSettings property"
+                        $deploymentRequest.ChangeRequestSettings = @(
+                            @{
+                                "ChangeRequestNumber" = $dependency.JSMChangeRequestNumber
+                                "Type" = "JiraServiceManagement"
+                            }
+                        )
+                    }
+                
+                    return $deploymentRequest
+                }
+                
+                function Get-DeploymentPreview
+                {
+                    param (
+                        $octopusUrl,
+                        $octopusApiKey,
+                        $dependency
+                    )
+                
+                    if ($null -eq $dependency.TenantId)
+                    {
+                        Write-Verbose "The deployment tenant id was not sent in, generating a preview by hitting releases/$($dependency.ReleaseIdToDeploy)/deployments/preview/$($dependency.TargetEnvironmentId)?includeDisabledSteps=true"    
+                        return Invoke-OctopusApi -octopusUrl $octopusUrl -endPoint "releases/$($dependency.ReleaseIdToDeploy)/deployments/preview/$($dependency.TargetEnvironmentId)?includeDisabledSteps=true" -apiKey $octopusApiKey -method "GET" -spaceId $dependency.SpaceId
+                    }
+                
+                    Write-Verbose "The deployment tenant id was sent in, generating a preview by hitting releases/$($dependency.ReleaseIdToDeploy)/deployments/previews" 
+                    $requestBody = @{
+                    		DeploymentPreviews = @(
+                    			@{
+                                	"TenantId" = $dependency.TenantId
+                            		"EnvironmentId" = $dependency.TargetEnvironmentId
+                                 }
+                            )
+                    }
+                    return Invoke-OctopusApi -octopusUrl $octopusUrl -endPoint "releases/$($dependency.ReleaseIdToDeploy)/deployments/previews" -apiKey $octopusApiKey -method "POST" -spaceId $dependency.SpaceId -item $requestBody -itemIsArray $true
+                }
+                
+                function Get-ValuesForPromptedVariables
+                {
+                    param (
+                        $deploymentPreview,
+                        $dependency
+                    )
+                
+                    $deploymentFormValues = @{}
+                    if ($null -eq $deploymentPreview.Form -or $null -eq $deploymentPreview.Form.Elements -or $deploymentPreview.Form.Elements.Count -eq 0)
+                    {
+                        Write-Verbose "The deployment preview did not contain any form elements, returning empty form values"
+                        return $deploymentFormValues
+                    }  
+                    
+                    if ($null -eq $dependency.promptedVariables -or $dependency.promptedVariables.Count -eq 0)
+                    {
+                        Write-Verbose "Form values were provided but there are no prompted variables in the deployment preview, returning empty form values"
+                        return $deploymentFormValues
+                    }
+                        
+                    Write-Verbose $promptedValueList.Length
+                    
+                    foreach($element in $deploymentPreview.Form.Elements)
+                    {
+                        $nameToSearchFor = $element.Control.Name
+                        $labelToSearchFor = $element.Control.Label
+                        $uniqueName = $element.Name
+                        $isRequired = $element.Control.Required
+                        
+                        $promptedVariableFound = $false
+                        
+                        Write-Verbose "Looking for the prompted variable value for $nameToSearchFor"
+                        foreach ($promptedValue in $dependency.promptedVariables)
+                        {            
+                            Write-Verbose "Comparing $nameToSearchFor with provided prompted variable $($promptedValue.Name)"
+                            if ($nameToSearchFor.ToLower().Trim() -eq $promptedValue.Name.ToLower().Trim())
+                            {
+                                Write-Verbose "Found the prompted variable value $nameToSearchFor"
+                                $deploymentFormValues[$uniqueName] = $promptedValue.Value
+                                $promptedVariableFound = $true
+                                break
+                            }
+                
+                            Write-Verbose "Comparing $labelToSearchFor with provided prompted variable $($promptedValue.Name)"
+                            if ($labelToSearchFor.ToLower().Trim() -eq $promptedValue.Name.ToLower().Trim())
+                            {
+                                Write-Verbose "Found the prompted variable value $labelToSearchFor"
+                                $deploymentFormValues[$uniqueName] = $promptedValue.Value
+                                $promptedVariableFound = $true
+                                break
+                            }
+                        }
+                        
+                        if ($promptedVariableFound -eq $false -and $isRequired -eq $true)
+                        {
+                            Write-Highlight "❌ Unable to find a value for $($dependency.ProjectName) the required prompted variable $nameToSearchFor or the label $labelToSearchFor.  Failing deployment now since the required value is missing."
+                            Exit 1
+                        }
+                    }
+                    
+                    return $deploymentFormValues
+                }
+                    
+                
+                $dependencyResultList = $parameterDependencyResults | ConvertFrom-Json -Depth 10
+                $taskCapLimit = Get-TaskCapLimitFromApi -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey
+                $deployGroupInfo = Get-DeployGroupInfo -dependencyResultList $dependencyResultList
+                
+                foreach ($deployGroup in $deployGroupInfo.DeployGroupOrdered)
+                {
+                    Write-Host "Checking all the dependencies in deploy group $deployGroup have been deployed.  Any dependencies that haven't been deployed will be started..."    
+                
+                    $dependenciesInGroup = $deployGroupInfo.DeployGroupDependencyList[$deployGroup].DependencyList    
+                    $allDeploymentsCompleted = $false
+                
+                    do 
+                    {
+                        $deploymentCounter = 0
+                        Write-Host "Looping through dependencies in deploy group $deployGroup to start and check deployment status"
+                        foreach ($dependency in $dependenciesInGroup)
+                        {
+                            if ($null -ne $dependency.DeploymentTaskId)
+                            {
+                                Write-Host "Checking on the status of deployment $($dependency.DeploymentTaskId) for project $($dependency.ProjectName) to $($dependency.TargetEnvironmentName)..."
+                
+                                $deploymentStatus = Get-DeploymentStatus -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey -deploymentTaskId $dependency.DeploymentTaskId -timeoutInMinutes $parameterDeploymentTimeoutMinutes
+                                if ($deploymentStatus -eq "Running" -or $deploymentStatus -eq "Queued" -or $deploymentStatus -eq "Executing" -or $deploymentStatus -eq "Interrupted")
+                                {
+                                    Write-Host "⏳ Deployment for project $($dependency.ProjectName) to $($dependency.TargetEnvironmentName) is still in progress with status $deploymentStatus.  Will check again later..."
+                                    continue
+                                }
+                
+                                $dependency.DeploymentIsNeeded = $false                
+                
+                                if ($deploymentStatus -ne "Success")
+                                {
+                                    Write-Highlight "❌ Deployment for project $($dependency.ProjectName) to $($dependency.TargetEnvironmentName) failed with status $deploymentStatus.  Stopping further deployments."
+                                    Write-Error "Stopping the deployment because the dependency deployment failed."
+                                    Exit 1
+                                }
+                
+                                Write-Highlight "✅ Deployment for project $($dependency.ProjectName) to $($dependency.TargetEnvironmentName) was successfully deployed."
+                            }
+                
+                            if ($dependency.DeploymentIsNeeded -eq $false)
+                            {   
+                                $deploymentCounter += 1
+                                continue
+                            }
+                
+                            Write-Host "Checking to see if there available capacity to deploy $($dependency.ProjectName) to environment $($dependency.TargetEnvironmentName)..."
+                            Wait-ForAvailableCapacity -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey -taskCapLimit $taskCapLimit -minAvailableTaskCapacity $parameterMinAvailableTaskCapacity        
+                
+                            Write-Host "There is sufficient capacity to deploy $($dependency.ProjectName) to $($dependency.TargetEnvironmentName).  Starting deployment now..."
+                            $dependency.DeploymentTaskId = Invoke-DependencyDeployment -octopusUrl $parameterOctopusInstance -octopusApiKey $parameterOctopusAPIKey -dependency $dependency            
+                
+                            Write-Highlight "⏳ $($dependency.ProjectName) $($dependency.VersionToDeploy) was successfully invoked, you can access the deployment [here]($octopusUrl/app#/$($dependency.SpaceId)/tasks/$($dependency.DeploymentTaskId))"
+                        }
+                
+                        if ($deploymentCounter -eq $dependenciesInGroup.Count)
+                        {
+                            $allDeploymentsCompleted = $true
+                
+                            foreach ($dependency in $dependenciesInGroup)
+                            {
+                                if ($dependency.DeploymentIsNeeded -eq $false -and $null -eq $dependency.DeploymentTaskId)
+                                {         
+                                    Write-Highlight "✅ Deployment for project $($dependency.ProjectName) to $($dependency.TargetEnvironmentName) is not needed."                       
+                                }            
+                            }
+                            
+                            Write-Highlight "✅ All deployments for deploy group $deployGroup have been completed."
+                        }
+                        else 
+                        {
+                            Write-Host "⏳ Not all deployments for deploy group $deployGroup have been completed. Sleeping for 10 seconds before re-evaluating..."
+                            Start-Sleep -Seconds 10
+                        }
+                    } while ($allDeploymentsCompleted -eq $false)    
+                }
+                
+                Write-Highlight "✅ All dependency deployments have been successfully verified."
+                
+                
+                EOT
+            Octopus.Action.Script.ScriptSource = "Inline"
+            Octopus.Action.Script.Syntax = "PowerShell"
+            OctopusUseBundledTooling = "False"
+        }
+        worker_pool_variable = "#{Template.Worker.Pool}"
+    }
+}
