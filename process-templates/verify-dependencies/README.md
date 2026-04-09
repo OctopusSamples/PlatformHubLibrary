@@ -2,7 +2,7 @@
 
 This process template will help you ensure all the dependent projects for your application have been deployed to a target environment with a specific version.
 
-![Example of the verify dependencies being used in a deployment](verify-dependencies-in-action.png)
+![Example of the verify dependencies being used in a deployment](images/verify-dependencies-in-action.png)
 
 ## Use Case
 
@@ -166,7 +166,7 @@ The dependency configuration is:
 
 The current state of the dependent applications are:
 
-![The current state of the dependent projects](current-state-of-applications.png)
+![The current state of the dependent projects](images/current-state-of-applications.png)
 
 ### Warn when missing dependencies found
 
@@ -183,11 +183,11 @@ This configuration is only concerned with warning the user in the event a depend
 
 When a deployment runs the result will be:
 
-![Warning without approval](warning-no-approval.png)
+![Warning without approval](images/warning-no-approval.png)
 
 If you prefer, you can require approval before proceeding.  This allows someone to acknowledge the missing dependency.  This is the default behavior of the process template.
 
-![Warning with approval](warning-with-approval.png)
+![Warning with approval](images/warning-with-approval.png)
 
 ### Stop deployments when missing dependencies found
 
@@ -204,7 +204,7 @@ This configuration is will stop the deployment in the event a dependency doesn't
 
 The resulting deployment is:
 
-![Failed deployment](failed-deployment.png)
+![Failed deployment](images/failed-deployment.png)
 
 The approval parameter is superfluous when the action is set to `Stop Deployment`.  The failure will occur before the manual intervention step runs.
 
@@ -247,7 +247,7 @@ In this example, version `1.0.53` is in `Production` but the step found `1.0.53.
 ]
 ```
 
-![New version found when deploy new version option is selected](deploy-when-new-matching-results.png)
+![New version found when deploy new version option is selected](images/deploy-when-new-matching-results.png)
 
 ### Version 
 
@@ -262,7 +262,7 @@ In this example, version `1.0.53` is in `Production` but the step found `1.0.53.
 - **Target Tenant**: #{Octopus.Deployment.Tenant.Name} (Default)
 - **Project Dependencies**: Same as JSON above
 
-![New version found when deploy new version option is selected](deploy-when-new-matching-results.png)
+![New version found when deploy new version option is selected](images/deploy-when-new-matching-results.png)
 
 ## Example Results
 
@@ -272,59 +272,59 @@ As seen above, the step will behave differently based on current state of the de
 
 When all the dependencies meet the requirements, regardless of configuration, the process template will notify you and the template will complete.  If approval or deployment options are chosen those steps will be skipped.
 
-![When all the dependencies are satisfied](all-dependencies-match.png)
+![When all the dependencies are satisfied](images/all-dependencies-match.png)
 
 ### Version to deploy isn't found in source environment
 
 When the step is unable to find a version in the source environment matching the pattern to deploy it will stop the deployment when set to Stop or one of the deploy options.
 
-![Failure because multi-tenanted deployment is not ready](multi-tenanted-deployment-failure.png)
+![Failure because multi-tenanted deployment is not ready](images/multi-tenanted-deployment-failure.png)
 
 ### Deploy without approval
 
 In this example, version `1.0.54.2` is in `Production` but the step found `1.0.54.3` in a source environment to deploy.  The step is configured to deploy when a new version is found without approval.  So that version was deployed to production without stopping for an approval.
 
-![New version found and deployed without approval](no-approval-required.png)
+![New version found and deployed without approval](images/no-approval-required.png)
 
 ### Reuse change request number is set to yes
 
 In this example, reuse the change request number is set to yes.  A change request is created in the parent project and that value is sent to the child when it invoked a deployment.
 
-![Change request number is reused](reuse-change-request-number.png)
+![Change request number is reused](images/reuse-change-request-number.png)
 
 ### Multi-Tenancy - Dependent project isn't configured for the target environment
 
 In this scenario, the process template is attempting to deploy `1.0.5` to `Test` for `NE03-Benson`.  However, `NE03-Benson` isn't mapped to the `Test` environment.  
 
-![Tenant isn't mapped to the target environment](tenant-not-mapped.png)
+![Tenant isn't mapped to the target environment](images/tenant-not-mapped.png)
 
 In any configuration, be it continue, deploy, or stop, the process template will notify you the tenant isn't mapped and continue.
 
-![Result of the tenant not being mapped to target environment](tenant-not-mapped-deployment-result.png)
+![Result of the tenant not being mapped to target environment](images/tenant-not-mapped-deployment-result.png)
 
 ### Multi-Tenancy - Dependent project hasn't been deploy to target environment
 
 In this scenario, the process template is attempting to deploy `1.0.5` to `Production` for `NE03-Benson`.  The project has been deployed for other tenants to `Test`, `Staging` and `Production` so it can be deployed to `Production` for `NE03-Benson`
 
-![Tenant is ready for the deployment to the target environment](tenant-has-deployed.png)
+![Tenant is ready for the deployment to the target environment](images/tenant-has-deployed.png)
 
 For the continue configuration it warn a deployment is needed. For the deploy and approve configuration, the validation will find the version and deploy it to `Production`.  
 
-![Approval required for multi-tenanted deployment](multi-tenanted-deployment-requiring-approval.png)
+![Approval required for multi-tenanted deployment](images/multi-tenanted-deployment-requiring-approval.png)
 
 Once approval is received the deployment will proceed.
 
-![Deployment started for multi-tenanted application](deployment-started-multi-tenancy.png)
+![Deployment started for multi-tenanted application](images/deployment-started-multi-tenancy.png)
 
 ### Multi-Tenancy - Dependent project hasn't deployed to an earlier environment
 
 In this scenario, the process template is attempting to deploy `1.0.5` to `Production` for `NE01-Omaha`.  As you can see, it hasn't been deployed to `Staging`.  
 
-![No multi-tenancy deployment to source environment](tenant-not-deployed.png)
+![No multi-tenancy deployment to source environment](images/tenant-not-deployed.png)
 
 For any configuration, be it stop, deploy* or continue the validation will fail.  The step will either fail the deployment (stop or deploy* selected) or warn the user (continue).
 
-![Failure because multi-tenanted deployment is not ready](multi-tenanted-deployment-failure.png)
+![Failure because multi-tenanted deployment is not ready](images/multi-tenanted-deployment-failure.png)
 
 ## Assumptions Made
 
