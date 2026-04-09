@@ -6,13 +6,23 @@ This process template will help you ensure all the dependent projects for your a
 
 ## Use Case
 
-In a perfect world, each project in Octopus Deploy is independently deployable.  However, the real world is messy and dependencies, even transient dependencies, continue to exist.  This process template solves ensures all the dependent projects are running the appropriate version.  It will also let you approve and deploy those dependent projects.  
+In a perfect world, each project in Octopus Deploy is independently deployable.  However, the real world is messy and dependencies, even transient dependencies, continue to exist.  
+
+The `Verify Dependencies` process template came about from previous experience.  Imagine working on a loan origination system at a bank.  The loan origination system was dependent upon multiple REST API services.  
+
+- Customer Information Service - Truth center for the customer PII data.
+- Financial Service - Truth center for the customer's financial information.
+- Credit Service - Checked the customer's credit against the big three credit agencies.
+- Collateral Service - Truth center for the customer's collateral.
+- Decision Engine Service - Rules based engine that would auto-approve the loan or require additional verification.
+
+Each of those services are managed by a different team, who had different priorities and deployment schedules.  The challenge is you'd make a change to our application based on functionality added in version `2.1.x` of the Financial Service, but production was running `2.0.5`.  The endpoints, requests, and responses wouldn't change.  It'd be all behind the scenes work.
 
 ### Dependency JSON
 
-You supply a JSON array of the project's dependencies.
+All the dependencies are managed via a JSON array you pass to the template.
 
-```
+```JSON
 [
   {
     "projectName": "Spear",
@@ -117,6 +127,205 @@ The process template makes it possible to reuse change requests.  If a change re
 
 If a dependent project requires prompted variable values, you can supply them in the JSON.  It will match the prompted variable on the label or the variable name.  You can pass values to those prompted variables using Octostache syntax.
 
+### Waiting for running deployments to complete
+
+Before determining the version in the target environments and the source environment the process template will check to see if there are any running deployments.  In the event there are running deployments for the dependent project to the target environment or source environments it will wait for those deployments to finish.  
+
+## Example Usage
+
+As seen above, there are a lot of possible options when using this process template.  In this example, a project is created that relies on the following projects:
+
+- Spear
+- TAKA
+- TAWA
+- StoreHub - multi-tenanted
+
+The dependency configuration is:
+
+```JSON
+[
+  {
+    "versionPattern": ">1.0.56",    
+    "projectName": "Spear",    
+  },
+  {
+    "versionPattern": "~2.4.0",    
+    "projectName": "TAKA",    
+  },
+  {
+    "versionPattern": "^4.0.0",    
+    "projectName": "TAWA",
+  },
+ {
+    "versionPattern": ">1.0.3",    
+    "projectName": "StoreHub",
+    "tenantName": "Internal",    
+  }
+]
+```
+
+The current state of the dependent applications are:
+
+![The current state of the dependent projects](current-state-of-applications.png)
+
+### Warn when missing dependencies found
+
+This configuration is only concerned with warning the user in the event a dependency doesn't match the version pattern.  The settings will be:
+
+- **Worker Pool**: Worker pool of your choice
+- **API Key**: API Key of a service account who has permissions to view deployments in all environments.
+- **Default Dependency Action**: Continue Deploy
+- **Approval requested to proceed**: No
+- **Approval teams**: Pick any
+- **Reuse Change Request on Dependencies**: No (Default)
+- **Target Tenant**: #{Octopus.Deployment.Tenant.Name} (Default)
+- **Project Dependencies**: Same as JSON above
+
+When a deployment runs the result will be:
+
+![Warning without approval](warning-no-approval.png)
+
+If you prefer, you can require approval before proceeding.  This allows someone to acknowledge the missing dependency.  This is the default behavior of the process template.
+
+![Warning with approval](warning-with-approval.png)
+
+### Stop deployments when missing dependencies found
+
+This configuration is will stop the deployment in the event a dependency doesn't match the version pattern.  The settings will be:
+
+- **Worker Pool**: Worker pool of your choice
+- **API Key**: API Key of a service account who has permissions to view deployments in all environments.
+- **Default Dependency Action**: Stop Deployment
+- **Approval requested to proceed**: No
+- **Approval teams**: Pick any
+- **Reuse Change Request on Dependencies**: No (Default)
+- **Target Tenant**: #{Octopus.Deployment.Tenant.Name} (Default)
+- **Project Dependencies**: Same as JSON above
+
+The resulting deployment is:
+
+![Failed deployment](failed-deployment.png)
+
+The approval parameter is superfluous when the action is set to `Stop Deployment`.  The failure will occur before the manual intervention step runs.
+
+### Version in source environment is newer than target environment
+
+In this example, version `1.0.53` is in `Production` but the step found `1.0.53.1`.  The step is configured to deploy when a new version is found, so it deployed that version to `Production`.
+
+- **Worker Pool**: Worker pool of your choice
+- **API Key**: API Key of a service account who has permissions to view deployments in all environments.
+- **Default Dependency Action**: Deploy when new version is found
+- **Approval requested to proceed**: Yes
+- **Approval teams**: Pick any
+- **Reuse Change Request on Dependencies**: No (Default)
+- **Target Tenant**: #{Octopus.Deployment.Tenant.Name} (Default)
+- **Project Dependencies**:
+  
+```JSON
+[
+  {
+    "versionPattern": ">1.0.53",    
+    "projectName": "Spear",
+    "deployGroup": 1,
+  },
+  {
+    "versionPattern": "~2.4.0",    
+    "projectName": "TAKA",
+    "deployGroup": 1
+  },
+  {
+    "versionPattern": "^4.0.0",    
+    "projectName": "TAWA",
+    "deployGroup": 2
+  },
+ {
+    "versionPattern": ">1.0.3",    
+    "projectName": "StoreHub",
+    "tenantName": "NE03-Benson",
+    "deployGroup": 3
+  }
+]
+```
+
+![New version found when deploy new version option is selected](deploy-when-new-matching-results.png)
+
+### Version 
+
+In this example, version `1.0.53` is in `Production` but the step found `1.0.53.1`.  The step is configured to deploy when a new version is found, so it deployed that version to `Production`.
+
+- **Worker Pool**: Worker pool of your choice
+- **API Key**: API Key of a service account who has permissions to view deployments in all environments.
+- **Default Dependency Action**: Deploy when new version is found
+- **Approval requested to proceed**: Yes
+- **Approval teams**: Pick any
+- **Reuse Change Request on Dependencies**: No (Default)
+- **Target Tenant**: #{Octopus.Deployment.Tenant.Name} (Default)
+- **Project Dependencies**: Same as JSON above
+
+![New version found when deploy new version option is selected](deploy-when-new-matching-results.png)
+
+## Example Results
+
+As seen above, the step will behave differently based on current state of the deployments and the options configured.  This section will walk you through some common results.
+
+### All dependencies meet requirements
+
+When all the dependencies meet the requirements, regardless of configuration, the process template will notify you and the template will complete.  If approval or deployment options are chosen those steps will be skipped.
+
+![When all the dependencies are satisfied](all-dependencies-match.png)
+
+### Version to deploy isn't found in source environment
+
+When the step is unable to find a version in the source environment matching the pattern to deploy it will stop the deployment when set to Stop or one of the deploy options.
+
+![Failure because multi-tenanted deployment is not ready](multi-tenanted-deployment-failure.png)
+
+### Deploy without approval
+
+In this example, version `1.0.54.2` is in `Production` but the step found `1.0.54.3` in a source environment to deploy.  The step is configured to deploy when a new version is found without approval.  So that version was deployed to production without stopping for an approval.
+
+![New version found and deployed without approval](no-approval-required.png)
+
+### Reuse change request number is set to yes
+
+In this example, reuse the change request number is set to yes.  A change request is created in the parent project and that value is sent to the child when it invoked a deployment.
+
+![Change request number is reused](reuse-change-request-number.png)
+
+### Multi-Tenancy - Dependent project isn't configured for the target environment
+
+In this scenario, the process template is attempting to deploy `1.0.5` to `Test` for `NE03-Benson`.  However, `NE03-Benson` isn't mapped to the `Test` environment.  
+
+![Tenant isn't mapped to the target environment](tenant-not-mapped.png)
+
+In any configuration, be it continue, deploy, or stop, the process template will notify you the tenant isn't mapped and continue.
+
+![Result of the tenant not being mapped to target environment](tenant-not-mapped-deployment-result.png)
+
+### Multi-Tenancy - Dependent project hasn't been deploy to target environment
+
+In this scenario, the process template is attempting to deploy `1.0.5` to `Production` for `NE03-Benson`.  The project has been deployed for other tenants to `Test`, `Staging` and `Production` so it can be deployed to `Production` for `NE03-Benson`
+
+![Tenant is ready for the deployment to the target environment](tenant-has-deployed.png)
+
+For the continue configuration it warn a deployment is needed. For the deploy and approve configuration, the validation will find the version and deploy it to `Production`.  
+
+![Approval required for multi-tenanted deployment](multi-tenanted-deployment-requiring-approval.png)
+
+Once approval is received the deployment will proceed.
+
+![Deployment started for multi-tenanted application](deployment-started-multi-tenancy.png)
+
+### Multi-Tenancy - Dependent project hasn't deployed to an earlier environment
+
+In this scenario, the process template is attempting to deploy `1.0.5` to `Production` for `NE01-Omaha`.  As you can see, it hasn't been deployed to `Staging`.  
+
+![No multi-tenancy deployment to source environment](tenant-not-deployed.png)
+
+For any configuration, be it stop, deploy* or continue the validation will fail.  The step will either fail the deployment (stop or deploy* selected) or warn the user (continue).
+
+![Failure because multi-tenanted deployment is not ready](multi-tenanted-deployment-failure.png)
+
 ## Assumptions Made
 
 This template was designed with the following assumptions:
@@ -128,4 +337,3 @@ This template was designed with the following assumptions:
 ## Expected Changes
 
 The process template is rather complex.  If you want a simple "Are all the dependencies deployed?" check then delete the manual intervention and deployment step.
-
